@@ -234,8 +234,30 @@ def specify_task(
     return SpecifyOutcome(task_id, True, "specified", new_title=new_title)
 
 
-def list_triage_ids(*, tenant: Optional[str] = None) -> list[str]:
-    """Task ids in the triage column; ``tenant`` narrows the sweep."""
+def is_escalated_block_gate(task: kb.Task) -> bool:
+    """True for a triage card the unblock-loop breaker parked for a human.
+
+    ``_route_block`` sends a card to ``triage`` once it re-blocks for the same
+    non-dependency cause ``BLOCK_RECURRENCE_LIMIT`` times. ``block_kind`` /
+    ``block_recurrences`` persist through specify/promote and are cleared only
+    by ``complete_task``, so this is derived from state the kernel already
+    keeps — no marker. Sweeps (auto-decompose, ``--all``) must skip these:
+    re-specifying an unchanged human gate promoted it straight back to a
+    worker that re-blocked it, every tick, forever. An explicit per-task
+    specify/decompose or a manual move out of triage is still honoured, and a
+    later same-cause block re-parks it here.
+    """
+    return (
+        task.status == "triage"
+        and task.block_kind != "dependency"
+        and int(task.block_recurrences or 0) >= kb.BLOCK_RECURRENCE_LIMIT
+    )
+
+
+def list_triage_ids(*, tenant: Optional[str] = None, limit: Optional[int] = None) -> list[str]:
+    """Triage ids eligible for a sweep; ``tenant`` narrows it. Cards parked by
+    the block-loop breaker (:func:`is_escalated_block_gate`) are excluded —
+    they stay visible in the triage column for a human."""
     with kbc.connect_closing() as conn:
-        tasks = kb.list_tasks(conn, status="triage", tenant=tenant, include_archived=False)
-    return [t.id for t in tasks]
+        tasks = kb.list_tasks(conn, status="triage", tenant=tenant, include_archived=False, limit=limit)
+    return [t.id for t in tasks if not is_escalated_block_gate(t)]
