@@ -799,6 +799,15 @@ When a new task omits its tenant, creation inherits the first nonempty tenant
 among its parents, in supplied order. An explicit tenant (including the worker's
 active tenant passed by tools) wins. Boards remain the hard isolation boundary.
 
+Cards the unblock-loop breaker escalated to Triage (re-blocked `needs_input`,
+`capability`, `transient` or untyped past the recurrence limit) are human gates:
+automatic sweeps — the auto-decomposer and `specify`/`decompose --all` — skip
+them, so an unchanged spec rewrite can never send the same gate back to a
+worker. They stay visible in Triage. Resolve one explicitly: act on the gate,
+then run `hermes kanban decompose <id>` / `specify <id>`, click Decompose/Specify
+on the card, or move it out of Triage. If the worker blocks for the same cause
+again it is parked again. Completing the task clears the loop state.
+
 **Manual** — `kanban.auto_decompose: false`. Triage tasks stay in triage until you act. Click the **⚗ Decompose** button on a card, run `hermes kanban decompose <id>` (or `--all`), or use `/kanban decompose <id>` from a chat. This matches the pre-decomposer behavior of the board, useful when you want full control over what runs when.
 
 **Important boundary:** Manual mode disables only the built-in Triage decomposer. It does not prevent a profile from calling `kanban_create`, and it does not disable creator-session wake-ups. With `kanban.auto_subscribe_on_create: true`, a task's terminal event resumes the originating agent with a synthetic status turn so it can inspect the handoff and decide whether genuinely new follow-up work is needed. Set `auto_subscribe_on_create: false` when task completion should remain passive. For provenance, built-in decomposer children use `created_by=auto-decomposer`; tasks created by a resumed profile carry that profile name instead.

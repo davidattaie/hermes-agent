@@ -30,6 +30,7 @@ from hermes_cli.kanban_specify import (
     _call_aux, _extract_json_blob, _load_triage_task, _task_prompt_fields, _title_body,
 )
 from hermes_cli.kanban_specify import _profile_author as _specify_author
+from hermes_cli.kanban_specify import list_triage_ids as _specify_list_triage_ids
 
 logger = logging.getLogger(__name__)
 
@@ -337,10 +338,9 @@ def decompose_task(
 
 
 def list_triage_ids(*, tenant: Optional[str] = None) -> list[str]:
-    """Return task ids currently in the triage column."""
-    with kbc.connect_closing() as conn:
-        rows = kb.list_tasks(conn, status="triage", tenant=tenant, limit=1000)
-    return [row.id for row in rows]
+    """Triage ids eligible for decomposition; block-loop-parked human gates
+    are excluded (see ``kanban_specify.is_escalated_block_gate``)."""
+    return _specify_list_triage_ids(tenant=tenant, limit=1000)
 
 
 # ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
