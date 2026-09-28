@@ -3454,6 +3454,21 @@ def _wait_for_external_cron_worker(
                 pass
 
 
+def _external_worker_module_argv(module: str) -> list[str]:
+    """argv prefix that runs ``module`` with Hermes's dependencies importable.
+
+    A bare ``python -m`` skips ``hermes_bootstrap``, so under a git checkout, whose
+    dependencies live in a managed environment activated at launch, the worker dies on
+    its first third-party import (``No module named 'ruamel'``) before the ack. The
+    checkout launcher's ``--run-module`` activates that environment first. Wheel/pipx
+    installs ship no launcher and already share one venv, so they keep ``-m``.
+    """
+    launcher = Path(__file__).resolve().parent.parent / ".hermes" / "bin" / "hermes"
+    if launcher.is_file():
+        return [str(launcher), "--run-module", module]
+    return [sys.executable, "-m", module]
+
+
 def _launch_external_cron_worker(job: dict) -> bool:
     """Launch *job* outside the managed gateway process when required.
 
@@ -3471,9 +3486,7 @@ def _launch_external_cron_worker(job: dict) -> bool:
     # Captured so a worker that dies before its acknowledgement can name the cause (#112729).
     stderr_path = handoff_dir / f"{execution_id}.stderr"
     command = [
-        sys.executable,
-        "-m",
-        "cron.scheduler",
+        *_external_worker_module_argv("cron.scheduler"),
         "--external-worker-file",
         str(payload_path),
         "--ack-file",

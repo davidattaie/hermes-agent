@@ -994,3 +994,38 @@ def test_post_handoff_waiter_failure_records_bookkeeping_without_alert(
     assert len(marks) == 1 and marks[0][0][1] is False
     assert marks[0][0][2].startswith("Restart-safe cron worker failed after handoff: ")
     assert execution_ledger.get_execution(record["id"])["status"] == "failed"
+
+
+def test_external_worker_argv_uses_checkout_launcher_to_activate_dependencies(
+    tmp_path, monkeypatch,
+):
+    """A git checkout keeps its dependencies in a managed environment that only
+    ``hermes_bootstrap`` activates; a bare ``python -m cron.scheduler`` worker died with
+    "No module named 'ruamel'" before the ack. When the checkout launcher exists, the
+    worker runs through its ``--run-module`` switch."""
+    import cron.scheduler as scheduler
+
+    root = tmp_path / "checkout"
+    (root / "cron").mkdir(parents=True)
+    launcher = root / ".hermes" / "bin" / "hermes"
+    launcher.parent.mkdir(parents=True)
+    launcher.write_text("#!/bin/sh\n")
+    monkeypatch.setattr(scheduler, "__file__", str(root / "cron" / "scheduler.py"))
+
+    assert scheduler._external_worker_module_argv("cron.scheduler") == [
+        str(launcher.resolve()), "--run-module", "cron.scheduler",
+    ]
+
+
+def test_external_worker_argv_falls_back_to_python_m_without_launcher(
+    tmp_path, monkeypatch,
+):
+    """Wheel/pipx installs ship no checkout launcher and share one venv, so ``-m`` works."""
+    import cron.scheduler as scheduler
+
+    (tmp_path / "cron").mkdir()
+    monkeypatch.setattr(scheduler, "__file__", str(tmp_path / "cron" / "scheduler.py"))
+
+    assert scheduler._external_worker_module_argv("cron.scheduler") == [
+        sys.executable, "-m", "cron.scheduler",
+    ]
