@@ -218,6 +218,36 @@ def _load_routing(*, root_assignee: Optional[str] = None) -> _Routing:
     )
 
 
+# Mirror the reply-unblock script's operator/system classification. Manual
+# specify/decompose is an explicit operator action and bypasses this auto guard.
+_OPERATOR_AUTHORS = ("dashboard", "operator", "default", "discord-relay")
+_SYSTEM_PREFIXES = ("BLOCKED:", "UNBLOCK:", "Decomposed into", "Coordinator",
+                    "⚠️ **Coordinator", "Tino", "⚠️ **Tino", "auto-decomposer", "system")
+
+
+def _awaiting_operator(conn, task_id: str) -> bool:
+    task = kb.get_task(conn, task_id)
+    if task is None or task.block_kind != "needs_input":
+        return False
+    block = conn.execute(
+        "SELECT created_at FROM task_events WHERE task_id = ? "
+        "AND kind IN ('blocked', 'block_loop_detected') ORDER BY id DESC LIMIT 1",
+        (task_id,),
+    ).fetchone()
+    if block is None:
+        return True  # fail closed for legacy typed cards without an audit event
+    not_system = " AND ".join("body NOT LIKE ?" for _ in _SYSTEM_PREFIXES)
+    reply = conn.execute(
+        "SELECT 1 FROM task_comments WHERE task_id = ? AND created_at > ? "
+        f"AND author IN ({','.join('?' for _ in _OPERATOR_AUTHORS)}) AND {not_system} LIMIT 1",
+        (task_id, block["created_at"], *_OPERATOR_AUTHORS,
+         *(prefix + "%" for prefix in _SYSTEM_PREFIXES)),
+    ).fetchone()
+    if reply is None:
+        logger.debug("decompose: %s needs_input awaiting operator", task_id)
+    return reply is None
+
+
 def _apply_single(task: kb.Task, parsed: dict, routing: _Routing, author: str) -> DecomposeOutcome:
     """``fanout=false``: single-task spec promotion (same effect as specify)."""
     title_val, body_val = _title_body(parsed)
@@ -229,6 +259,8 @@ def _apply_single(task: kb.Task, parsed: dict, routing: _Routing, author: str) -
     if title_val is None and body_val is None:
         return DecomposeOutcome(task.id, False, "decomposer returned fanout=false with no title/body")
     with kbc.connect_closing() as conn:
+        if author == "auto-decomposer" and _awaiting_operator(conn, task.id):
+            return DecomposeOutcome(task.id, False, "needs_input awaiting operator")
         ok = kb.specify_triage_task(
             conn, task.id, title=title_val, body=body_val, assignee=assignee_val, author=author,
         )
@@ -280,6 +312,8 @@ def _apply_fanout(task_id: str, parsed: dict, routing: _Routing, author: str) ->
         return DecomposeOutcome(task_id, False, reason)
     try:
         with kbc.connect_closing() as conn:
+            if author == "auto-decomposer" and _awaiting_operator(conn, task_id):
+                return DecomposeOutcome(task_id, False, "needs_input awaiting operator")
             child_ids = decompose_triage_task(
                 conn,
                 task_id,
@@ -313,6 +347,11 @@ def decompose_task(
     if task is None:
         return DecomposeOutcome(task_id, False, reason)
 
+    if author == "auto-decomposer":
+        with kbc.connect_closing() as conn:
+            if _awaiting_operator(conn, task_id):
+                return DecomposeOutcome(task_id, False, "needs_input awaiting operator")
+
     routing = _load_routing(root_assignee=task.assignee)
     raw, reason = _call_aux(
         "decompose", task_id, aux_task="kanban_decomposer", system=_SYSTEM_PROMPT,
@@ -340,4 +379,4 @@ def list_triage_ids(*, tenant: Optional[str] = None) -> list[str]:
     """Return task ids currently in the triage column."""
     with kbc.connect_closing() as conn:
         rows = kb.list_tasks(conn, status="triage", tenant=tenant, limit=1000)
-    return [row.id for row in rows]
+        return [row.id for row in rows if not _awaiting_operator(conn, row.id)]

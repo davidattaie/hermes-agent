@@ -430,9 +430,9 @@ def _fmt_changes_requested(ev, n) -> tuple:
 
 
 def _fmt_block_loop_detected(ev, n) -> tuple:
-    """Re-blocked for the same cause past the limit and routed to `triage`.
+    """Re-blocked for the same cause at the limit; needs_input stays blocked.
 
-    It emits no blocked/status event, so ping loudly here. A repeated-block
+    Its companion blocked event is audit-only, so ping here. A repeated-block
     circuit breaker establishes that orchestration attention is needed; it
     does NOT establish that a human decision or owner input exists. Use
     neutral orchestration wording unless the block was typed as a genuine
@@ -442,7 +442,7 @@ def _fmt_block_loop_detected(ev, n) -> tuple:
     kind = _payload(ev, "kind")
     decision = kind == "needs_input"
     msg = t(
-        "gateway.kanban.ping.triage", head=n.head,
+        "gateway.kanban.ping.loop_parked" if decision else "gateway.kanban.ping.triage", head=n.head,
         why=t("gateway.kanban.ping.triage_decision" if decision else "gateway.kanban.ping.triage_attention"),
         recurrences=_clip(ev, "recurrences", "gateway.kanban.ping.triage_recurrences", 200),
         reason=_clip(ev, "reason", "gateway.kanban.ping.reason_suffix", 160),
@@ -499,6 +499,15 @@ class _KanbanNotification:
 
     def __init__(self, runner: Any, d: dict, *, platform_cls: Any, sub_fail_counts: dict) -> None:
         self.runner = runner
+        # The companion blocked event is for reply-unblock timestamps, not a
+        # second ping. Re-trips retain their audit trail but only the first
+        # threshold crossing asks for attention (also across notifier ticks).
+        from hermes_cli.kanban_db import BLOCK_RECURRENCE_LIMIT
+        d = {**d, "events": [ev for ev in d["events"] if not (
+            (ev.kind == "blocked" and (ev.payload or {}).get("loop_detected"))
+            or (ev.kind == "block_loop_detected"
+                and (ev.payload or {}).get("recurrences", BLOCK_RECURRENCE_LIMIT) > BLOCK_RECURRENCE_LIMIT)
+        )]}
         self.d = d
         self.platform_cls = platform_cls
         self.sub_fail_counts = sub_fail_counts
@@ -587,7 +596,10 @@ class _KanbanNotification:
             # for child tasks; use it only for legacy rows.
             self.session_key = sub["chat_id"] or getattr(task, "session_id", None) or ""
         # i18n keys: gateway.kanban.wake.<kind> for each _WAKE_KINDS entry.
-        _parts = [t(f"gateway.kanban.wake.{k}") for k in _WAKE_KINDS if k in self.wake_kinds]
+        parked = any(ev.kind == "block_loop_detected" and (ev.payload or {}).get("kind") == "needs_input"
+                     for ev in self.d["events"])
+        _parts = [t(f"gateway.kanban.wake.{'loop_parked' if k == 'block_loop_detected' and parked else k}")
+                  for k in _WAKE_KINDS if k in self.wake_kinds]
         _status = t("gateway.kanban.wake.status_joiner").join(_parts) or t("gateway.kanban.wake.status_default")
         synth = t(
             "gateway.kanban.wake.message",

@@ -82,6 +82,37 @@ def _unseen_terminal_events(tid):
         conn.close()
 
 
+def test_needs_input_loop_trip_delivers_once_and_skips_later_trips(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(tmp_path / "parked.db"))
+    kb.init_db()
+    with kbc.connect_closing() as conn:
+        tid = kb.create_task(conn, title="need operator", assignee="worker")
+        assert kb.block_task(conn, tid, kind="needs_input", reason="choose route")
+        assert kb.unblock_task(conn, tid)
+        # Subscribe after the first ordinary block; measure the threshold trip.
+        kbn.add_notify_sub(conn, task_id=tid, platform="telegram", chat_id="chat-1", delivery_mode="notify+wake")
+        assert kb.block_task(conn, tid, kind="needs_input", reason="choose route")
+    adapter = RecordingAdapter()
+    runner = _make_runner(adapter)
+    asyncio.run(_run_one_notifier_tick(monkeypatch, runner))
+    assert len(adapter.sent) == 1
+    assert "choose route" in adapter.sent[0]["text"]
+    assert "parked in BLOCKED" in adapter.sent[0]["text"]
+    assert len(adapter.handled) == 1
+    assert "parked in blocked" in adapter.handled[0].text
+    runner._running = True
+    asyncio.run(_run_one_notifier_tick(monkeypatch, runner))
+    assert len(adapter.sent) == 1  # cursor replay does not resend
+    with kbc.connect_closing() as conn:
+        assert kb.unblock_task(conn, tid)
+        assert kb.block_task(conn, tid, kind="needs_input", reason="choose route")
+    runner._running = True
+    asyncio.run(_run_one_notifier_tick(monkeypatch, runner))
+    # Neither the later loop nor its audit-only companion notifies or wakes.
+    assert len(adapter.sent) == 1
+    assert len(adapter.handled) == 1
+
+
 def test_kanban_notifier_replays_telegram_dm_topic_delivery_metadata(tmp_path, monkeypatch):
     db_path = tmp_path / "dm-topic-metadata.db"
     monkeypatch.setenv("HERMES_KANBAN_DB", str(db_path))
