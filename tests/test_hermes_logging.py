@@ -1034,3 +1034,83 @@ class TestRolloverPreservesLogOwnership:
         monkeypatch.setattr(os, "chown", _refuse)
         self._rolled_handler(log_path)
         assert log_path.exists()
+
+
+class TestWebsocketKeepaliveNoiseFilter:
+    """asyncio 'ConnectionClosed* exception in shielded future' (1011) suppression."""
+
+    @staticmethod
+    def _exc(code, cls_name="ConnectionClosedError"):
+        # Duck-typed stand-in: filter keys on class name in the MRO and rcvd/sent.Close.code.
+        close = type("Close", (), {"code": code})()
+        base = type("ConnectionClosed", (Exception,), {})
+        exc = type(cls_name, (base,), {})()
+        exc.rcvd, exc.sent = None, close
+        return exc
+
+    @staticmethod
+    def _rec(msg, exc=None, name="asyncio", level=logging.ERROR):
+        ei = (type(exc), exc, None) if exc is not None else None
+        return logging.LogRecord(name, level, __file__, 1, msg, (), ei)
+
+    @pytest.fixture
+    def flt(self):
+        now = [1000.0]
+        f = hermes_logging._WebsocketKeepaliveNoiseFilter(window_s=300, clock=lambda: now[0])
+        f.now = now
+        return f
+
+    MSG = "ConnectionClosedError exception in shielded future"
+
+    def test_1011_suppressed_and_counted(self, flt):
+        assert flt.filter(self._rec(self.MSG, self._exc(1011))) is False
+        assert flt.total_suppressed == 1
+
+    def test_ok_variant_with_1011_suppressed(self, flt):
+        msg = "ConnectionClosedOK exception in shielded future"
+        assert flt.filter(self._rec(msg, self._exc(1011, "ConnectionClosedOK"))) is False
+
+    def test_other_close_code_passes(self, flt):
+        assert flt.filter(self._rec(self.MSG, self._exc(1002))) is True
+        assert flt.total_suppressed == 0
+
+    def test_unrelated_asyncio_error_passes(self, flt):
+        assert flt.filter(self._rec("Task exception was never retrieved", self._exc(1011))) is True
+        assert flt.filter(self._rec("ValueError exception in shielded future", ValueError("x"))) is True
+        assert flt.filter(self._rec("boom")) is True
+
+    def test_non_asyncio_logger_passes(self, flt):
+        assert flt.filter(self._rec(self.MSG, self._exc(1011), name="websockets")) is True
+
+    def test_summary_once_per_window(self, flt, caplog):
+        with caplog.at_level(logging.WARNING, logger="hermes_logging"):
+            for _ in range(3):
+                flt.filter(self._rec(self.MSG, self._exc(1011)))
+            assert [r.getMessage() for r in caplog.records].count(
+                "1 websocket keepalive closes suppressed (code 1011, asyncio shielded future)") == 1
+            assert len(caplog.records) == 1
+            flt.now[0] += 301
+            flt.filter(self._rec(self.MSG, self._exc(1011)))
+        assert len(caplog.records) == 2
+        assert caplog.records[1].getMessage().startswith("3 websocket keepalive closes")
+        assert caplog.records[1].levelno == logging.WARNING
+
+    def test_install_idempotent_via_setup(self):
+        lg = logging.getLogger("asyncio")
+        try:
+            hermes_logging._quiet_noisy_loggers()
+            hermes_logging._quiet_noisy_loggers()
+            n = [f for f in lg.filters if isinstance(f, hermes_logging._WebsocketKeepaliveNoiseFilter)]
+            assert len(n) == 1
+        finally:
+            for f in list(lg.filters):
+                if isinstance(f, hermes_logging._WebsocketKeepaliveNoiseFilter):
+                    lg.removeFilter(f)
+
+    def test_real_websockets_exception_if_available(self, flt):
+        ws = pytest.importorskip("websockets.exceptions")
+        from websockets.frames import Close
+        e1 = ws.ConnectionClosedError(None, Close(1011, "keepalive ping timeout"), None)
+        e2 = ws.ConnectionClosedError(None, Close(1008, "policy"), None)
+        assert flt.filter(self._rec(self.MSG, e1)) is False
+        assert flt.filter(self._rec(self.MSG, e2)) is True

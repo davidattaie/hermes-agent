@@ -220,10 +220,78 @@ _NOISY_LOGGERS = (
 )
 
 
+_KEEPALIVE_CLOSE_CODE = 1011
+_KEEPALIVE_SUMMARY_WINDOW_S = 300.0
+
+
+class _WebsocketKeepaliveNoiseFilter(logging.Filter):
+    """Drop asyncio's "<X> exception in shielded future" ERROR for websockets 1011 closes.
+
+    websockets' legacy ``close_connection()`` future is orphaned when its owner is
+    cancelled during a reconnect, and asyncio's default handler logs it at ERROR with a
+    ~30-line traceback. Matches ONLY: logger ``asyncio``, message
+    ``ConnectionClosed* exception in shielded future``, and an exception that is a
+    websockets ``ConnectionClosed`` whose close code is 1011. Everything else passes.
+    Suppressed records are counted and a one-line WARNING summary is emitted at most once
+    per window (on the next suppressed record after the window elapses).
+    """
+
+    def __init__(self, window_s: float = _KEEPALIVE_SUMMARY_WINDOW_S, clock=_monotonic) -> None:
+        super().__init__()
+        self._window_s = window_s
+        self._clock = clock
+        self._lock = threading.Lock()
+        self._pending = 0
+        self._last_summary: Optional[float] = None
+        self.total_suppressed = 0
+
+    @staticmethod
+    def _is_keepalive_close(record: logging.LogRecord) -> bool:
+        if record.name != "asyncio" or not record.exc_info:
+            return False
+        exc = record.exc_info[1]
+        if exc is None or not any(c.__name__ == "ConnectionClosed" for c in type(exc).__mro__):
+            return False
+        if not record.getMessage().startswith("ConnectionClosed") \
+                or "exception in shielded future" not in record.getMessage():
+            return False
+        # Real close code: the frame we sent or received (not the deprecated .code).
+        frame = getattr(exc, "rcvd", None) or getattr(exc, "sent", None)
+        return getattr(frame, "code", None) == _KEEPALIVE_CLOSE_CODE
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        try:
+            if not self._is_keepalive_close(record):
+                return True
+        except Exception:
+            return True
+        summary = None
+        with self._lock:
+            self._pending += 1
+            self.total_suppressed += 1
+            now = self._clock()
+            if self._last_summary is None or now - self._last_summary >= self._window_s:
+                summary, self._pending, self._last_summary = self._pending, 0, now
+        if summary:
+            logging.getLogger(__name__).warning(
+                "%d websocket keepalive closes suppressed (code 1011, asyncio shielded future)",
+                summary,
+            )
+        return False
+
+
+def _install_websocket_noise_filter() -> None:
+    """Attach the keepalive-noise filter to the ``asyncio`` logger (idempotent)."""
+    lg = logging.getLogger("asyncio")
+    if not any(isinstance(f, _WebsocketKeepaliveNoiseFilter) for f in lg.filters):
+        lg.addFilter(_WebsocketKeepaliveNoiseFilter())
+
+
 def _quiet_noisy_loggers() -> None:
     """Pin noisy third-party loggers at WARNING."""
     for name in _NOISY_LOGGERS:
         logging.getLogger(name).setLevel(logging.WARNING)
+    _install_websocket_noise_filter()
 
 
 def set_session_context(session_id: str) -> None:
