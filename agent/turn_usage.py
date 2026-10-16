@@ -15,6 +15,7 @@ from contextlib import suppress
 from dataclasses import dataclass
 from typing import Any, Dict, List
 
+from agent import request_timing
 from agent.image_token_cost import calibrate_from_usage
 from agent.usage_anchor import capture_usage_anchor, set_usage_anchor
 from agent.usage_pricing import estimate_usage_cost, normalize_usage, with_served_service_tier
@@ -96,6 +97,7 @@ def record_response_usage(
             "API call #%d: model=%s provider=%s in=? out=? total=? latency=%.1fs usage=unavailable",
             agent.session_api_calls, agent.model, agent.provider or "unknown", api_duration,
         )
+        request_timing.note_model_call(agent, api_duration)
         return ResponseUsageOutcome(compression_attempts=compression_attempts, rearmed=rearmed)
 
     canonical_usage = with_served_service_tier(
@@ -208,6 +210,9 @@ def record_response_usage(
         prompt_tokens, completion_tokens, total_tokens,
         api_duration, _cache_pct, _ident,
     )
+    request_timing.note_model_call(
+        agent, api_duration, prompt_tokens, completion_tokens,
+        canonical_usage.cache_read_tokens, canonical_usage.cache_write_tokens)
     # nous.anthropic_wire=auto: the session's wire is decided once, from this first response.
     if agent.session_api_calls == 1 and (agent.provider or "") == "nous":
         with suppress(Exception):

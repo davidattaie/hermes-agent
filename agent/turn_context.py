@@ -29,6 +29,7 @@ from agent.model_metadata import (
     estimate_native_anthropic_request_tokens_rough,
     estimate_request_tokens_rough,
 )
+from agent import request_timing
 from agent.image_token_cost import bind_image_token_cost
 from agent.usage_anchor import anchored_context_tokens, restore_usage_anchor
 from agent.turn_author import parse_turn_author
@@ -919,7 +920,8 @@ def _memory_turn_start_and_prefetch(
     ext_prefetch_cache = ""
     with suppress(Exception):
         if not is_trivial_prompt(_query):
-            ext_prefetch_cache = agent._memory_manager.prefetch_all(_query, session_id=agent.session_id) or ""
+            with request_timing.span("memory_prefetch", agent):
+                ext_prefetch_cache = agent._memory_manager.prefetch_all(_query, session_id=agent.session_id) or ""
     # Deterministic recall indicator via _emit_status so the model can't silently
     # drop injected memory.
     if ext_prefetch_cache:
@@ -1133,7 +1135,8 @@ def build_turn_context(
 
     # System prompt is cached per session for prefix caching.
     if agent._cached_system_prompt is None:
-        restore_or_build_system_prompt(agent, system_message, conversation_history)
+        with request_timing.span("system_prompt_build", agent):
+            restore_or_build_system_prompt(agent, system_message, conversation_history)
     active_system_prompt = agent._cached_system_prompt
 
     # Bot Mode DM tool — injected ONLY into a bot's canonical "Bot Chat" session (same

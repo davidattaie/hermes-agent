@@ -16,6 +16,7 @@ from concurrent.futures import Future, ThreadPoolExecutor, wait
 from functools import partial
 from typing import Any, Callable, Dict, List, Optional
 
+from agent import request_timing
 from agent.redact import redact_for_egress
 
 from agent.memory_provider import MemoryProvider, PRE_COMPRESS_CHECKPOINT_API_VERSION, ctx_bound, spawn_context_thread
@@ -981,5 +982,6 @@ class MemoryManager:
         if "hermes_home" not in kwargs:
             from hermes_constants import get_hermes_home
             kwargs["hermes_home"] = str(get_hermes_home())
-        self._each_provider("initialize failed", lambda p: p.initialize(session_id=session_id, **kwargs),
-                            level=logging.WARNING)
+        with request_timing.span("memory_init"):
+            self._each_provider("initialize failed", lambda p: p.initialize(session_id=session_id, **kwargs),
+                                level=logging.WARNING)

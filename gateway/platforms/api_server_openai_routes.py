@@ -15,7 +15,9 @@ import uuid
 from contextlib import suppress
 from typing import Any, Dict, List, Optional
 
+from agent import request_timing
 from agent.i18n import t
+from gateway.platforms import api_server_timing as _api_timing
 
 try:
     from aiohttp import web
@@ -600,10 +602,14 @@ class OpenAICompatRoutesMixin:
         lets the writer interrupt on disconnect; the EOS sentinel is enqueued from the task's done
         callback so drain loops never race a polled ``agent_task.done()``. ``on_done(task)`` runs
         in that same callback, before EOS."""
+        timer = request_timing.current()
+
         def _on_delta(delta):
             # None from the agent is a CLI box-close signal, not EOS — forwarding it would end
             # the stream early. Called from the run_conversation worker thread: put_threadsafe.
             if delta is not None:
+                if timer is not None:
+                    timer.mark_once("first_delta")  # model's first streamed token
                 stream_q.put_threadsafe(delta)
         def _on_reasoning(text):
             # Structured reasoning deltas (#99552): the agent's reasoning_callback, not the
@@ -710,6 +716,7 @@ class OpenAICompatRoutesMixin:
                     from gateway.platforms.api_server_runs import _resolve_live_session_id
                     session_id = await _resolve_live_session_id(self, provided_session_id)
                     history = await asyncio.to_thread(db.get_messages_as_conversation, session_id)
+                    request_timing.mark("session_loaded")
             except Exception as e:
                 logger.warning("Failed to load session history for %s: %s", session_id, e)
                 history = []
@@ -881,6 +888,7 @@ class OpenAICompatRoutesMixin:
             sse_headers["X-Hermes-Session-Key"] = gateway_session_key
         response = web.StreamResponse(status=200, headers=sse_headers)
         await response.prepare(request)
+        _api_timing.hook_stream_first_write(response)
         return response
 
     async def _write_sse_chat_completion(

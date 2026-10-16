@@ -51,6 +51,7 @@ from agent.tool_dispatch_helpers import (
     make_tool_result_message,
 )
 from tools.terminal_tool_lifecycle import get_active_env
+from agent import request_timing
 from tools.thread_context import propagate_context_to_thread
 from tools.tool_result_storage import (
     maybe_persist_tool_result,
@@ -1086,6 +1087,8 @@ def _commit_tool_result(
     from hermes_cli.observability.shared_metrics_harness import observe_tool_outcome
 
     observe_tool_outcome(agent, function_name, is_error)
+    if not blocked:
+        request_timing.note_tool_call(agent, function_name, tool_duration, not is_error)
     if observed:
         if not blocked:
             function_result = agent._append_guardrail_observation(

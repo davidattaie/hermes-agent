@@ -24,6 +24,7 @@ except ImportError:
     # would reset the already-imported ``web`` to None (500 on POST /v1/runs).
     RequestKey = None  # type: ignore[assignment,misc]
 
+from agent import request_timing
 from gateway.platforms.api_server_room_grants import _json_error, _room_grant_error_response
 from gateway.platforms.api_server_run_idempotency import TERMINAL_STATUSES
 
@@ -748,6 +749,7 @@ async def _handle_runs(self, request: web.Request, *, _api_server) -> web.Respon
         task = self._active_run_tasks[run_id] = asyncio.create_task(
             _execute_run_via_live_owner(self, launch, *admitted, _api_server=_api_server))
     else:
+        request_timing.defer_finish_to_background_task()  # _execute_run's finally ends the request
         task = self._active_run_tasks[run_id] = asyncio.create_task(_execute_run(self, launch, _api_server=_api_server))
     with suppress(TypeError):
         self._background_tasks.add(task)  # tracked for shutdown drain
@@ -1001,6 +1003,11 @@ async def _execute_run(self, run: _RunLaunch, *, _api_server) -> None:
         with suppress(Exception):
             loop.call_soon(run.put_event, None)  # close after the queued events
         _retire_live_run(self, run_id)
+        run_timer = request_timing.current()
+        if run_timer is not None:
+            run_timer.set_session(run.session_id)
+            run_timer.mark_once("response_complete")
+            run_timer.finish("ok")
 
 
 def _unregister_approval_notify(approval_session_key: Optional[str]) -> None:

@@ -57,6 +57,7 @@ from agent.turn_preflight_gate import run_preflight_gate
 from agent.turn_request_assembly import assemble_api_request
 from agent.turn_response_check import check_api_response
 from agent.turn_response_intake import normalize_model_response
+from agent import request_timing
 from agent.turn_tool_round import run_tool_round
 from hermes_logging import set_session_context
 from tools.skill_provenance import set_current_write_origin
@@ -1612,6 +1613,7 @@ def _run_conversation_turn(
         )
     except PreflightCompressionTimedOut as _preflight_timeout_exc:
         return _preflight_timeout_result(agent, _preflight_timeout_exc, conversation_history)
+    request_timing.mark_agent(agent, "turn_start", once=True)
     # Voice turns may run on auxiliary.voice_chat: bound after the prompt/row/compaction were settled
     # against the main model, undone in finalize_turn (and run_conversation's finally on early exits).
     from agent.voice_turn_route import begin_voice_turn_route

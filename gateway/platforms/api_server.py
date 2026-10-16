@@ -138,12 +138,16 @@ from gateway.display_config import resolve_display_setting
 from gateway.platforms import api_server_room_dispatch as _room_dispatch
 from gateway.platforms import api_server_room_grants as _room_grants
 from gateway.platforms import api_server_runs as _api_runs
+from gateway.platforms.api_server_admission import (
+    _admit_api_agent_request, _api_agent_request_reservation, _release_pending_api_work,
+    _reserve_pending_api_work)
 from gateway.platforms.api_server_openai_routes import OpenAICompatRoutesMixin
 from gateway.platforms.api_server_memory_sessions import ApiServerMemorySessions
 from gateway.platforms.base import (
     MEDIA_TAG_CLEANUP_RE, BasePlatformAdapter, SendResult, _terminal_sentinel_start, is_network_accessible,
     validate_media_delivery_path)
 from gateway.platforms.api_server_run_idempotency import RunIdempotencyStore
+from agent import request_timing
 from agent.i18n import t
 from agent.redact import redact_sensitive_text
 from agent.interrupt_compat import request_hard_interrupt
@@ -922,43 +926,6 @@ def _invalid_request(message: str) -> web.Response:
     return web.json_response({"error": {"message": message, "type": "invalid_request_error"}}, status=400)
 
 
-_api_agent_request_reservation: ContextVar[Optional[dict[str, bool]]] = ContextVar(
-    "api_agent_request_reservation", default=None)
-
-
-def _admit_api_agent_request(handler):
-    """Reserve an authenticated API turn before its handler first awaits: drain check +
-    reservation in one non-awaiting block so a request admitted just before shutdown can't go
-    invisible while parsing its body. The mutable reservation releases the slot exactly once."""
-    @wraps(handler)
-    async def _wrapped(self, request, *args, **kwargs):
-        auth_err = (
-            self._check_run_auth(request, permission="dispatch")
-            if _api_runs._uses_room_run_auth(self, request)
-            else self._check_auth(request))
-        if auth_err:
-            return auth_err
-        draining = self._draining_response()
-        if draining is not None:
-            return draining
-        reservation = {"active": True}
-        token = _api_agent_request_reservation.set(reservation)
-        self._pending_agent_requests += 1
-        try:
-            return await handler(self, request, *args, **kwargs)
-        finally:
-            _release_pending_api_work(self, reservation)
-            _api_agent_request_reservation.reset(token)
-    return _wrapped
-
-
-def _release_pending_api_work(adapter, reservation: dict[str, bool]) -> None:
-    """Release a pending-work reservation exactly once."""
-    if reservation["active"]:
-        reservation["active"] = False
-        adapter._pending_agent_requests = max(0, adapter._pending_agent_requests - 1)
-
-
 def _require_auth(handler):
     """Run ``self._check_auth`` first and return its 401 instead of the handler."""
     @wraps(handler)
@@ -968,19 +935,6 @@ def _require_auth(handler):
             return auth_err
         return await handler(self, request, *args, **kwargs)
     return _wrapped
-
-
-@contextmanager
-def _reserve_pending_api_work(adapter):
-    """Keep externally-triggered background work visible across awaits; a handler may detach
-    the reservation to a task whose done callback then owns release."""
-    reservation = {"active": True, "detached": False}
-    adapter._pending_agent_requests += 1
-    try:
-        yield reservation
-    finally:
-        if not reservation["detached"]:
-            _release_pending_api_work(adapter, reservation)
 
 
 class _IdempotencyCache:
@@ -2334,6 +2288,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         model = self._recover_or_record_model(model, runtime_kwargs, gateway_session_key)
         return model, session_override, request_model, request_provider
 
+    @request_timing.timed_agent_build
     def _create_agent(
         self, ephemeral_system_prompt: Optional[str] = None, session_id: Optional[str] = None,
         stream_delta_callback=None, tool_progress_callback=None, tool_start_callback=None,
@@ -2409,7 +2364,8 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             "memory_manager": self._memory_sessions.checkout(session_id)}
         if request_service_tier is not _REQUEST_OPTION_MISSING:
             agent_kwargs["service_tier"] = request_service_tier
-        agent = AIAgent(**agent_kwargs)
+        with request_timing.span("agent_init"):
+            agent = AIAgent(**agent_kwargs)
         route_source = (
             "session_model_lock" if confirmed_runtime_lock
             else "session_model_override" if session_override
@@ -4217,6 +4173,9 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
         request_profile = _api_request_profile.get()
         request_browser_control_principal = _api_request_browser_control_principal.get()
         request_browser_control_transport_family = _api_request_browser_control_transport_family.get()
+        timer = request_timing.current()
+        if timer is not None:
+            timer.set_session(session_id)
 
         def _run():
             from gateway.session_context import clear_session_vars
@@ -4227,6 +4186,10 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
                     browser_control_principal=request_browser_control_principal,
                     browser_control_transport_family=request_browser_control_transport_family,
                     session_history_delivery=session_history_delivery)
+                # Worker threads are reused: this is undone in the finally below.
+                timing_token = request_timing.activate(timer)
+                if timer is not None:
+                    timer.mark_once("worker_start")  # worker_submit -> worker_start = executor queue wait
                 agent = None
                 from agent.notification_presentation import notification_turn
                 from gateway.warning_notifications import diagnostic_turn_muted
@@ -4338,6 +4301,9 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
                             self._bind_declared_conversation(
                                 getattr(agent, "session_id", None) or session_id, gateway_session_key)
                     clear_session_vars(tokens)
+                    request_timing.deactivate(timing_token)
+        if timer is not None:
+            timer.mark_once("worker_submit")
         self._activate_admitted_request()
         self._inflight_agent_runs += 1
         started_at = time.perf_counter()
