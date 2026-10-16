@@ -551,6 +551,50 @@ def test_respawn_guard_ignores_auth_words_in_crashed_worker_output(kanban_home):
         assert kbd.check_respawn_guard(conn, spawn_failed_id) == "blocker_auth"
 
 
+def test_respawn_guard_stale_error_superseded_by_requeue_after_run(kanban_home):
+    """A stale auth-flavoured ``last_failure_error`` must not park a card that was
+    deliberately re-queued (block-loop triage -> promoted) after its latest run.
+
+    Without this the card sits in ``ready`` with 0 workers spawned forever: no run
+    ever replaces the text, so ``blocker_auth`` fires on every dispatcher tick.
+    """
+    with kbc.connect() as conn:
+        tid = kb.create_task(conn, title="requeued", assignee="a")
+        kb.claim_task(conn, tid)
+        run_id = kb.get_task(conn, tid).current_run_id
+        conn.execute(
+            "UPDATE task_runs SET outcome='blocked', status='failed', ended_at=? "
+            "WHERE id=?",
+            (5_000_000, run_id),
+        )
+        conn.execute(
+            "UPDATE tasks SET status='ready', current_run_id=NULL, "
+            "claim_lock=NULL, claim_expires=NULL, worker_pid=NULL, "
+            "last_failure_error=? WHERE id=?",
+            ("still need the owner to authorize the change", tid),
+        )
+        conn.commit()
+        # No re-queue since the run: genuine failure text still holds the card.
+        assert kbd.check_respawn_guard(conn, tid) == "blocker_auth"
+
+        # Operator/triage re-queues it after the run ended.
+        kb._append_event(conn, tid, "promoted", None, run_id=None)
+        conn.execute(
+            "UPDATE task_events SET created_at=? WHERE task_id=? AND kind='promoted'",
+            (5_000_100, tid),
+        )
+        conn.commit()
+        assert kbd.check_respawn_guard(conn, tid) is None
+
+        # An event from BEFORE the run ended does not count.
+        conn.execute(
+            "UPDATE task_events SET created_at=? WHERE task_id=? AND kind='promoted'",
+            (4_999_000, tid),
+        )
+        conn.commit()
+        assert kbd.check_respawn_guard(conn, tid) == "blocker_auth"
+
+
 def test_infrastructure_spawn_refusal_never_charges_the_card(
     kanban_home, monkeypatch, all_assignees_spawnable,
 ):

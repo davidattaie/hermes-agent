@@ -1589,7 +1589,20 @@ def check_respawn_guard(
     err = _kb._lossy_text(row["last_failure_error"])
     latest_outcome = latest_run["outcome"] if latest_run is not None else None
     if err and latest_outcome != "crashed" and _RESPAWN_BLOCKER_RE.search(err):
-        return "blocker_auth"
+        # A deliberate re-queue AFTER the latest run ended (block-loop triage →
+        # specified → promoted, unblock, reclaim) supersedes the persisted
+        # failure text: it describes a run the operator has since acted on, and
+        # holding the card would park it forever (no run ever replaces the text).
+        # Same exception the ``recent_success`` guard below makes.
+        latest_ended = int(latest_run["ended_at"] or 0) if latest_run is not None else 0
+        requeued_since_run = latest_run is not None and conn.execute(
+            "SELECT 1 FROM task_events "
+            "WHERE task_id = ? AND created_at > ? "
+            "AND kind IN ('promoted', 'unblocked', 'reclaimed') LIMIT 1",
+            (task_id, latest_ended),
+        ).fetchone()
+        if not requeued_since_run:
+            return "blocker_auth"
 
     # Review-lane spawns stop here: a recent completed run and a fresh PR URL
     # are the canonical *inputs* to a review handoff, not duplicate-work signals.
