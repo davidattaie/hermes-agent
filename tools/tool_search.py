@@ -24,7 +24,8 @@ from tools.tool_search_catalog import (
     CatalogEntry, _fn, _listing_group_label, _registry_entry, _registry_toolset,
     build_catalog, build_catalog_listing_with_form, search_catalog)
 from tools.tool_search_validation import (
-    local_batch_error, normalize_tool_call_entries, not_deferrable_error, validate_deferred_call_args)
+    local_batch_error, normalize_tool_call_entries, not_deferrable_error, resolve_wire_alias,
+    validate_deferred_call_args)
 from tools.connectors import CONNECTOR_BATCH_SENTINEL, is_connector_name
 from tools.connectors.search import (
     connections_in_scope, connector_entries_by_group, connectors_unavailable, remote_schemas_for)
@@ -501,7 +502,8 @@ def dispatch_tool_describe(args: dict[str, Any], *, current_tool_defs: list[dict
     not_found: list[str] = []
     undescribed: list[str] = []
     errors: dict[str, str] = {}
-    for name in names:
+    for requested in names:
+        name = resolve_wire_alias(requested)
         fn = by_name.get(name)
         remote_fn = remote_schemas.get(name)
         if fn is not None:

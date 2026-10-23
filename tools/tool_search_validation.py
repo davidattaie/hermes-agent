@@ -136,6 +136,24 @@ def validate_deferred_call_args(name: str, args: dict[str, Any]) -> Optional[str
         return None
 
 
+def resolve_wire_alias(name: str) -> str:
+    """Map an OAuth wire alias (``chat_history_lookup``) back to its registered tool name.
+
+    The Anthropic OAuth transport advertises ``session_search`` / ``memory`` under alias names in
+    prose, including this module's deferred-tool catalog, so the model naturally cites the alias
+    inside ``tool_call`` / ``tool_describe`` arguments. Those names never pass through
+    normalize_response, so resolve them here. A registered tool under the alias name still wins.
+    """
+    try:
+        from agent.anthropic_adapter import _OAUTH_TOOL_NAME_REVERSE_ALIASES
+        real = _OAUTH_TOOL_NAME_REVERSE_ALIASES.get(name)
+        if real and _registry_entry(name) is None and _registry_entry(real) is not None:
+            return real
+    except Exception:
+        pass
+    return name
+
+
 def normalize_tool_call_entries(args: dict[str, Any]) -> tuple[list[dict[str, Any]], Optional[str]]:
     """Normalize ``tool_call`` arguments into a ``calls[]`` list of entries.
 
@@ -170,6 +188,7 @@ def normalize_tool_call_entries(args: dict[str, Any]) -> tuple[list[dict[str, An
         name = str(raw.get("name") or "").strip()
         if not name:
             return [], f"tool_call calls[{position}] requires a 'name'"
+        name = resolve_wire_alias(name)
         if name in BRIDGE_TOOL_NAMES:
             return [], f"tool_call cannot invoke '{name}' (it is itself a bridge tool)"
         raw_args = raw.get("arguments")

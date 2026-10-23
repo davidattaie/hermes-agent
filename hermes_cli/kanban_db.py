@@ -1350,6 +1350,13 @@ def create_task(
                 # ACK-edge: the originating channel hears a child BLOCK, not just the fan-in.
                 inherit_creator_origin(conn, task_id, creator_task_id, created_at=now)
                 _inherit_notify_subs(conn, task_id, parents, created_at=now)
+            # Materialise the scratch dir now: cards created blocked/todo may be
+            # inspected (TERMINAL_CWD) before the dispatcher ever spawns them.
+            if workspace_kind == "scratch" and not workspace_path:
+                try:
+                    (workspaces_root(board=board) / task_id).mkdir(parents=True, exist_ok=True)
+                except OSError:
+                    pass  # resolve_workspace() recreates it at spawn
             return task_id
         except sqlite3.IntegrityError:
             if attempt == 1:

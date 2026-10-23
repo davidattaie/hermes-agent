@@ -2084,3 +2084,20 @@ def test_archive_non_running_task_does_not_attempt_termination(kanban_home):
             (t,),
         ).fetchone()
         assert row is None
+
+
+@pytest.mark.parametrize("initial_status", ["blocked", "running"])
+def test_create_task_scratch_creates_workspace_dir(kanban_home, initial_status):
+    """Scratch dir must exist right after creation, even for blocked cards,
+    so TERMINAL_CWD never points at a missing directory."""
+    with kbc.connect() as conn:
+        tid = kb.create_task(conn, title="scratch card", initial_status=initial_status)
+    ws = kb.workspaces_root() / tid
+    assert ws.is_dir()
+
+
+def test_create_task_dir_kind_does_not_create_scratch_dir(kanban_home, tmp_path):
+    with kbc.connect() as conn:
+        tid = kb.create_task(conn, title="dir card", workspace_kind="dir",
+                             workspace_path=str(tmp_path / "x"), initial_status="blocked")
+    assert not (kb.workspaces_root() / tid).exists()

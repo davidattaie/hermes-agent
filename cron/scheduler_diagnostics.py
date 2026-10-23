@@ -36,3 +36,80 @@ def external_worker_stderr_tail(path: Path) -> str:
         tail = "…" + tail
     tail = redact_sensitive_text(tail, force=True, redact_url_credentials=True)
     return f"; worker stderr: {tail}"
+
+
+def negative_exit_diagnostics(returncode, *, job_id=None, execution_id=None, process_pid=None) -> str:
+    """Evidence for a restart-safe worker killed by a signal (negative exit code).
+
+    Never raises. Returns a message suffix and appends a JSON line to
+    ``<cron dir>/worker_crashes.jsonl``. Records job name/script, signal, the
+    children's rusage, and where to look for kernel/core evidence (dmesg is often
+    unreadable by non-root, so the journal/coredumpctl hints are included).
+    """
+    if not isinstance(returncode, int) or returncode >= 0:
+        return ""
+    try:
+        import json
+        import resource
+        import shutil
+        import signal as _signal
+        import subprocess
+        import time
+        from hermes_constants import get_hermes_home
+
+        try:
+            sig_name = _signal.Signals(-returncode).name
+        except ValueError:
+            sig_name = f"signal {-returncode}"
+        info = {
+            "ts": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+            "returncode": returncode,
+            "signal": sig_name,
+            "job_id": job_id,
+            "execution_id": execution_id,
+            "worker_pid": process_pid,
+        }
+        try:
+            from cron.jobs import get_job
+            job = get_job(str(job_id)) if job_id else None
+            if job:
+                info["job_name"] = job.get("name")
+                info["script"] = job.get("script")
+        except Exception:
+            pass
+        ru = resource.getrusage(resource.RUSAGE_CHILDREN)
+        info["children_rusage"] = {
+            "maxrss_kib": ru.ru_maxrss, "utime_s": round(ru.ru_utime, 2),
+            "stime_s": round(ru.ru_stime, 2), "minflt": ru.ru_minflt,
+            "majflt": ru.ru_majflt,
+        }
+        hints = []
+        if shutil.which("coredumpctl") and process_pid:
+            hints.append(f"coredumpctl --user info {process_pid} (or: coredumpctl list)")
+        if job_id:
+            hints.append(
+                f"journalctl --user -g 'hermes-worker-cron-{job_id}|segfault' --since '-10min'")
+        try:
+            dm = subprocess.run(["dmesg", "--time-format=iso", "-T"], capture_output=True,
+                                text=True, timeout=3)
+            if dm.returncode == 0:
+                lines = [l for l in dm.stdout.splitlines()
+                         if "segfault" in l or "traps:" in l or "invalid opcode" in l][-3:]
+                info["dmesg_tail"] = lines
+            else:
+                hints.append("dmesg unreadable (kernel.dmesg_restrict); use journalctl -k")
+        except Exception:
+            hints.append("dmesg unavailable; use journalctl -k")
+        info["hints"] = hints
+        try:
+            log = get_hermes_home() / "cron" / "worker_crashes.jsonl"
+            log.parent.mkdir(parents=True, exist_ok=True)
+            with log.open("a", encoding="utf-8") as fh:
+                fh.write(json.dumps(info) + "\n")
+        except OSError:
+            pass
+        return (f"; killed by {sig_name} (job={info.get('job_name') or job_id}, "
+                f"script={info.get('script')}, maxrss_kib={ru.ru_maxrss}); "
+                f"diagnostics in cron/worker_crashes.jsonl")
+    except Exception:
+        return ""

@@ -1017,6 +1017,15 @@ def _cmd_schedule(args: argparse.Namespace) -> int:
         return _bulk_apply(ids, op, lambda tid: f"Scheduled {tid}{suffix}", lambda tid: f"cannot schedule {tid}")
 
 
+def _parked_awaiting_go(conn, tid: str) -> bool:
+    """Loop-parked needs_input card with no operator reply since its last block."""
+    from hermes_cli.kanban_decompose import _awaiting_operator
+    task = kb.get_task(conn, tid)
+    return bool(task and task.status == "blocked" and task.block_kind == "needs_input"
+                and task.block_recurrences >= kb.BLOCK_RECURRENCE_LIMIT
+                and _awaiting_operator(conn, tid))
+
+
 def _cmd_unblock(args: argparse.Namespace) -> int:
     if os.environ.get("HERMES_KANBAN_TASK"):
         return _err("kanban unblock is orchestrator-only; workers must hand off their assigned task")
@@ -1026,8 +1035,21 @@ def _cmd_unblock(args: argparse.Namespace) -> int:
     reason = _stripped_or_none(getattr(args, "reason", None))
     author = _profile_author() if reason else None
     suffix = f": {reason}" if reason else ""
+    decision = _stripped_or_none(getattr(args, "decision", None))
     with kbc.connect_closing() as conn:
-        op = _commented(conn, reason, author, "UNBLOCK", lambda tid: kb.unblock_task(conn, tid))
+        def unblock(tid):
+            # A card parked on the same needs_input question stays parked until an
+            # operator reply or a recorded decision exists; otherwise a sweep would
+            # respawn the worker just to restate the same wait.
+            if decision:
+                kb.add_comment(conn, tid, _profile_author(), f"DECISION: {decision}")
+            elif _parked_awaiting_go(conn, tid):
+                print(f"{tid} is awaiting-go (same needs_input question blocked "
+                      f"{kb.BLOCK_RECURRENCE_LIMIT}x, no reply since); not respawned. "
+                      "Decide it with --decision \"...\" or wait for an operator reply.", file=sys.stderr)
+                return False
+            return kb.unblock_task(conn, tid)
+        op = _commented(conn, reason, author, "UNBLOCK", unblock)
         return _bulk_apply(ids, op, lambda tid: f"Unblocked {tid}{suffix}",
                            lambda tid: f"cannot unblock {tid} (not blocked/scheduled?)")
 

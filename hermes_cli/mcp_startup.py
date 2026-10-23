@@ -57,8 +57,15 @@ def _has_configured_mcp_servers() -> bool:
         from hermes_cli.config import read_raw_config
 
         raw_config = read_raw_config() or {}
-        if isinstance(raw_config.get("mcp_servers"), dict) and raw_config["mcp_servers"]:
-            return True
+        servers = raw_config.get("mcp_servers")
+        if isinstance(servers, dict) and servers:
+            from tools.mcp_tool_common import mcp_server_enabled
+
+            # A config whose servers are all ``enabled: false`` has nothing to connect: opening
+            # the gate would spawn a discovery that always ends "zero connected servers" and
+            # re-run (and re-warn) on every later agent build.
+            if any(isinstance(cfg, dict) and mcp_server_enabled(cfg) for cfg in servers.values()):
+                return True
         from hermes_cli.agent_plugins import has_enabled_agent_plugin_mcp
 
         return has_enabled_agent_plugin_mcp(raw_config)
@@ -112,6 +119,8 @@ def start_background_mcp_discovery(*, logger, thread_name: str) -> None:
                 return
             if connected and not pending:
                 return
+            if not connected and not _has_configured_mcp_servers():
+                return  # nothing enabled to connect (all ``enabled: false``): retrying is pure noise
             if connected:
                 logger.info("MCP server(s) %s not connected yet; running discovery", ", ".join(pending))
             else:

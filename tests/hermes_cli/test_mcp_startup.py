@@ -295,6 +295,41 @@ def test_portable_only_mcp_configuration_opens_startup_gate(monkeypatch):
     assert mcp_startup._has_configured_mcp_servers() is True
 
 
+def _stub_raw_config(monkeypatch, raw):
+    monkeypatch.setitem(sys.modules, "hermes_cli.config", types.SimpleNamespace(read_raw_config=lambda: raw))
+    monkeypatch.setitem(
+        sys.modules,
+        "hermes_cli.agent_plugins",
+        types.SimpleNamespace(has_enabled_agent_plugin_mcp=lambda _config: False),
+    )
+
+
+def test_all_disabled_mcp_servers_close_startup_gate(monkeypatch):
+    _stub_raw_config(monkeypatch, {"mcp_servers": {"a": {"command": "x", "enabled": False}}})
+    assert mcp_startup._has_configured_mcp_servers() is False
+
+
+def test_one_enabled_mcp_server_opens_startup_gate(monkeypatch):
+    _stub_raw_config(
+        monkeypatch,
+        {"mcp_servers": {"a": {"command": "x", "enabled": False}, "b": {"command": "y"}}},
+    )
+    assert mcp_startup._has_configured_mcp_servers() is True
+
+
+def test_all_disabled_servers_never_retry_or_warn(monkeypatch):
+    _stub_raw_config(monkeypatch, {"mcp_servers": {"a": {"command": "x", "enabled": False}}})
+    warnings = []
+    logger = types.SimpleNamespace(debug=lambda *a, **k: None, warning=lambda *a, **k: warnings.append(a))
+    monkeypatch.setattr(mcp_startup, "_mcp_discovery_started", set())
+    monkeypatch.setattr(mcp_startup, "_mcp_discovery_thread", {})
+    monkeypatch.setattr(mcp_startup, "_any_mcp_connected", lambda: False)
+    for _ in range(3):
+        mcp_startup.start_background_mcp_discovery(logger=logger, thread_name="t")
+    assert warnings == []
+    assert mcp_startup._mcp_discovery_thread == {}
+
+
 
 
 

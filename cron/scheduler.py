@@ -3587,6 +3587,10 @@ def _wait_for_external_cron_worker_body(
             from cron.scheduler_diagnostics import external_worker_stderr_tail
 
             stderr_tail = external_worker_stderr_tail(stderr_path)
+        from cron.scheduler_diagnostics import negative_exit_diagnostics
+
+        stderr_tail += negative_exit_diagnostics(
+            returncode, execution_id=execution_id, process_pid=getattr(process, "pid", None))
         raise RuntimeError(f"{reason}{stderr_tail}")
 
 
@@ -3830,6 +3834,9 @@ def _launch_external_cron_worker(job: dict) -> bool:
             from cron.scheduler_diagnostics import external_worker_stderr_tail
             stderr_tail = external_worker_stderr_tail(stderr_path)
             stderr_path.unlink(missing_ok=True)
+            from cron.scheduler_diagnostics import negative_exit_diagnostics
+            stderr_tail += negative_exit_diagnostics(
+                returncode, job_id=job_id, execution_id=execution_id, process_pid=getattr(process, "pid", None))
             if dispatch.mode == "scoped" and scoped_spawn_lost_user_bus(worker_env):
                 # systemd-run itself failed before any worker ran, so the captured stderr
                 # holds nothing useful: name the cause, not the exit code.
