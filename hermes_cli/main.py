@@ -2496,6 +2496,8 @@ def cmd_update(args):
     from pm import InstallError
 
     try:
+        from hermes_cli.update_state_db import before_update
+        before_update(args)
         _cmd_update_impl(args, gateway_mode=gateway_mode)
     except (InstallError, OSError, subprocess.SubprocessError) as exc:
         print(f"✗ Update failed: {exc}")

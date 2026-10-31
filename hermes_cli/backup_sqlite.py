@@ -80,12 +80,13 @@ def _safe_copy_db(src: Path, dst: Path, *, timeout_seconds: float = 10.0) -> boo
         _close_quietly(conn)
 
 
-def preflight_state_db(home: Path) -> dict:
+def preflight_state_db(home: Path, *, keep: int = 2, prefix: str = "state.db.pre-update-emergency-") -> dict:
     """Publish an emergency snapshot; do not prune recovery files on failure."""
     source = home / "state.db"
     if not source.exists():
         return {"path": None, "message": "state.db not found (fresh install?)"}
-    prefix = "state.db.pre-update-emergency-"
+    if keep < 1:
+        raise ValueError("keep must be at least 1")
     stamp = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H-%M-%S-%fZ")
     destination = home / f"{prefix}{stamp}-{os.getpid()}.bak"
     fd, name = tempfile.mkstemp(prefix=prefix, suffix=".partial", dir=home)
@@ -105,12 +106,34 @@ def preflight_state_db(home: Path) -> dict:
         os.replace(staged, destination)
     finally:
         staged.unlink(missing_ok=True)
-    for old in sorted(home.glob(f"{prefix}*.bak"), reverse=True)[2:]:
+    for old in sorted(home.glob(f"{prefix}[0-9]*.bak"), reverse=True)[keep:]:
         try:
             old.unlink()
         except OSError as exc:
             logger.warning("Could not prune emergency snapshot %s: %s", old, exc)
     return {"path": str(destination), "bytes": size}
+
+
+def state_db_homes(root_home: Path):
+    """Enumerate existing databases without creating homes or following profile links."""
+    yield "default", root_home
+    profiles = root_home / "profiles"
+    if profiles.is_dir():
+        for home in sorted(profiles.iterdir()):
+            if not home.name.startswith(".") and not home.is_symlink() and home.is_dir():
+                if (home / "state.db").exists():
+                    yield f"profiles/{home.name}", home
+
+
+def preflight_all_state_dbs(root_home: Path) -> dict:
+    """Snapshot each profile independently; failures never prune its recovery files."""
+    results = {}
+    for label, home in state_db_homes(root_home):
+        try:
+            results[label] = preflight_state_db(home, keep=3, prefix="state.db.pre-update-")
+        except Exception as exc:
+            results[label] = {"path": None, "error": str(exc)}
+    return results
 
 
 if __name__ == "__main__":

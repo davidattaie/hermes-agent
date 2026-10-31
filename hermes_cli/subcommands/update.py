@@ -31,8 +31,12 @@ def build_update_parser(subparsers, *, cmd_update: Callable) -> None:
             "Read-only; kind is gateway / backend (Desktop serve) / hermes:<subcommand> / python, so a "
             "scheduled update can stop exactly those PIDs instead of looping. Always [] off Windows.")
     update_parser.add_argument(
+        "--no-db-backup", action="store_true", default=False,
+        help="Explicitly skip per-profile SQLite update backups (post-update read-only checks still run).",
+    )
+    update_parser.add_argument(
         "--no-backup", action="store_true", default=False,
-        help="Skip ALL pre-update backups for this run (both the quick state snapshot and the full zip; overrides updates.pre_update_backup)",
+        help="Skip filesystem snapshots and the full zip (overrides updates.pre_update_backup); SQLite recovery copies require --no-db-backup",
     )
     update_parser.add_argument(
         "--backup", action="store_true", default=False,
