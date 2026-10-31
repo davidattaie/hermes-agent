@@ -27,7 +27,7 @@ def quick_check(path: Path) -> str:
 def send_alert(root: Path, message: str) -> None:
     """Use the weekly watchdog's existing Hermes delivery target for immediate alerts."""
     try:
-        data = json.loads((root / "cron" / "jobs.json").read_text())
+        data = json.loads((root / "cron" / "jobs.json").read_text(encoding="utf-8-sig"))
         jobs = data.get("jobs", []) if isinstance(data, dict) else data
         targets = {job.get("failure_deliver") or job.get("deliver") for job in jobs
                    if Path(job.get("script") or "").name == "state_db_quick_check.py"}

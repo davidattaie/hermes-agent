@@ -1,5 +1,6 @@
 """Read-only update guards and per-profile recovery snapshots."""
 import sqlite3
+import pytest
 from pathlib import Path
 
 from hermes_cli import backup_sqlite as backup
@@ -205,14 +206,15 @@ def test_weekly_script_stdlib_only_silent_success_and_failure_exit(tmp_path):
     assert "STATE.DB CHECK FAILED" in result.stdout
 
 
-def test_immediate_alert_uses_watchdog_delivery_target(tmp_path, monkeypatch):
+@pytest.mark.parametrize("encoding", ["utf-8", "utf-8-sig"])
+def test_immediate_alert_uses_watchdog_delivery_target(tmp_path, monkeypatch, encoding):
     import json
     import subprocess
     from hermes_cli import state_db_check as check
     cron = tmp_path / "cron"
     cron.mkdir()
     (cron / "jobs.json").write_text(json.dumps({"jobs": [
-        {"script": "state_db_quick_check.py", "deliver": "discord:#ops"}]}))
+        {"script": "state_db_quick_check.py", "deliver": "discord:#ops"}]}), encoding=encoding)
     calls = []
     monkeypatch.setattr(check.shutil, "which", lambda name: "/bin/hermes")
     def send(argv, **kwargs):
