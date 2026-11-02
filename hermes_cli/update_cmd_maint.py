@@ -998,9 +998,8 @@ def _run_post_update_maintenance(
     except Exception:
         logger.debug("macOS TCC anchor refresh skipped", exc_info=True)
 
-    # state.db integrity guard for root home AND every profile; restore from own snapshot.
-    with _best_effort('Post-update state.db integrity check failed: %s'):
-        _verify_and_restore_state_dbs_post_update()
+    # Read-only state.db checks run in update_finish before maintenance.
+    # Automatic restoration is intentionally disabled: recovery is an operator decision.
 
     # Both shallow history and missing tags can hide the release identity.
     # Refresh them before the completion line and install stamp read it.

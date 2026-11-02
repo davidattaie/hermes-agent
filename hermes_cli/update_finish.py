@@ -16,6 +16,10 @@ def finish_update(*, root, assume_yes, gateway_mode, pre_update_snapshot_id,
         _write_gateway_update_exit_code, _resume_windows_gateways_and_merge_outcome,
     )
 
+    from hermes_constants import get_default_hermes_root
+    from hermes_cli.state_db_check import check_all
+
+    check_all(get_default_hermes_root(), alert=True)
     complete = _run_post_update_maintenance(
         assume_yes=assume_yes, gateway_mode=gateway_mode,
         pre_update_snapshot_id=pre_update_snapshot_id,
