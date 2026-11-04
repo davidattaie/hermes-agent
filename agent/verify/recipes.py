@@ -38,12 +38,15 @@ class Recipe:
     port: int | None = None
     readiness_path: str = "/"
     evidence: list[str] = field(default_factory=list)
+    # Detected Python recipes require a project-owned venv; manual recipes opt in.
+    isolated_python: bool = False
 
     def to_dict(self) -> dict[str, Any]:
         return {
             "name": self.name, "kind": self.kind, "bootstrap": list(self.bootstrap),
             "build": list(self.build), "test": list(self.test), "start": self.start,
             "port": self.port, "readinessPath": self.readiness_path, "evidence": list(self.evidence),
+            "isolatedPython": self.isolated_python,
         }
 
     @classmethod
@@ -74,6 +77,7 @@ class Recipe:
             build=_as_strings(raw.get("build") or raw.get("buildCommands")),
             test=_as_strings(raw.get("test") or raw.get("testCommands")),
             evidence=_as_strings(raw.get("evidence")),
+            isolated_python=raw.get("isolatedPython") is True,
         )
 
 
@@ -287,9 +291,12 @@ def detect_recipe(root: Path) -> Recipe | None:
     pkg = _read_package_json(root)
     if pkg is not None:
         return _detect_node_recipe(root, pkg)
+    python_recipe = _detect_python_recipe(root)
+    if python_recipe is not None:
+        python_recipe.isolated_python = True
+        return python_recipe
     return (
-        _detect_python_recipe(root)
-        or _detect_simple_recipe(root)
+        _detect_simple_recipe(root)
         or _detect_java_recipe(root)
         or _detect_make_recipe(root)
         or _detect_compose_recipe(root)

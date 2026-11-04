@@ -496,9 +496,8 @@ def test_file_tool_stales_evidence_by_session_id_for_absolute_edit(tmp_path, mon
 
 
 
-def test_workspace_verify_clears_stale_on_other_session(tmp_path, monkeypatch):
-    """A hermes verify pass is a property of the workspace, not the session
-    that ran the CLI (#103271)."""
+def test_workspace_verify_requires_explicit_editing_session_attribution(tmp_path, monkeypatch):
+    """Unbound CLI completion cannot certify another worker's untested content."""
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
     _python_project(tmp_path)
     changed = str(tmp_path / "changed.py")
@@ -507,6 +506,12 @@ def test_workspace_verify_clears_stale_on_other_session(tmp_path, monkeypatch):
 
     event = record_verify_run(root=tmp_path, session_id="default", ok=True, output="all green")
     assert event is not None
+    status = verification_status(session_id="s-edit", cwd=tmp_path)
+    assert status["status"] == "unverified"
+    assert changed in status["changed_paths"]
+
+    # The supported CLI adapter binds HERMES_SESSION_ID to this editing session.
+    record_verify_run(root=tmp_path, session_id="s-edit", ok=True, output="attributed execution")
     status = verification_status(session_id="s-edit", cwd=tmp_path)
     assert status["status"] == "passed"
     assert status["evidence"]["canonical_command"] == "hermes verify"
