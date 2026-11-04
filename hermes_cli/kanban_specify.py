@@ -131,6 +131,8 @@ def _load_triage_task(task_id: str) -> tuple[Optional[kb.Task], str]:
         return None, "unknown task id"
     if task.status != "triage":
         return None, f"task is not in triage (status={task.status!r})"
+    if task.block_kind or task.block_recurrences:
+        return None, "intervention triage is held pending prerequisite resolution"
     return task, ""
 
 
