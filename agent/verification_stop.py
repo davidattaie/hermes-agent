@@ -5,6 +5,7 @@ when the model tries to finish right after editing code without fresh evidence."
 from __future__ import annotations
 
 import os
+import shlex
 import tempfile
 from pathlib import Path
 from typing import Any, Iterable
@@ -98,7 +99,7 @@ def _verification_snapshot(
     first recognized workspace when every one is ``passed``."""
     try:
         from agent.coding_context import project_facts_for
-        from agent.verification_evidence import verification_status
+        from agent.verification_evidence import _is_temp_script_path, verification_status
     except Exception:
         return None
 
@@ -106,6 +107,9 @@ def _verification_snapshot(
     for cwd in _candidate_cwds(changed_paths):
         facts = project_facts_for(cwd)
         if not facts:
+            continue
+        cwd_paths = [path for path in changed_paths if cwd in _candidate_cwds([path])]
+        if cwd_paths and all(_is_temp_script_path(path, facts.get("root")) for path in cwd_paths):
             continue
         status = verification_status(session_id=session_id, cwd=cwd)
         first_snapshot = first_snapshot or (status, facts)
@@ -214,6 +218,13 @@ def build_verify_on_stop_nudge(
             "against the changed behavior, clean it up when possible, and "
             "summarize it explicitly as ad-hoc verification rather than suite "
             "green."
+        )
+
+    if has_recipe and session_id:
+        command_instruction += (
+            " Attribute an external CLI run to this editing session with "
+            f"`HERMES_SESSION_ID={shlex.quote(str(session_id))} hermes verify --json`; "
+            "another session's receipt cannot certify these edits without tested-content identity."
         )
 
     return (

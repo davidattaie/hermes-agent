@@ -155,7 +155,22 @@ def apply_stop_gates(
             ),
         )
 
+    def _stop() -> StopGateVerdict:
+        return StopGateVerdict(
+            continue_turn=False, final_response=final_response,
+            pending_verification_response=pending_verification_response,
+            pending_verification_response_previewed=pending_verification_response_previewed,
+        )
+
+    # interrupt()/hard_interrupt() publish this runtime flag for owner stops and
+    # cancellation. Never infer authority from the candidate answer's prose.
+    # Check before hooks and again after each potentially blocking lookup.
+    if getattr(agent, "_interrupt_requested", False):
+        return _stop()
+
     _lsp_note = _late_lsp_verdicts(agent)
+    if getattr(agent, "_interrupt_requested", False):
+        return _stop()
     if _lsp_note:
         agent._lsp_turn_end_notes = getattr(agent, "_lsp_turn_end_notes", 0) + 1  # int: checked above
         final_msg["finish_reason"] = "verification_required"
@@ -173,6 +188,8 @@ def apply_stop_gates(
         )
 
     _verify_nudge = _verify_on_stop_nudge(agent)
+    if getattr(agent, "_interrupt_requested", False):
+        return _stop()
     if _verify_nudge:
         agent._verification_stop_nudges = getattr(agent, "_verification_stop_nudges", 0) + 1
         final_msg["finish_reason"] = "verification_required"
@@ -186,6 +203,8 @@ def apply_stop_gates(
 
     _attempt = getattr(agent, "_pre_verify_nudges", 0)
     _verify_nudge2 = _pre_verify_nudge(agent, final_response, _attempt)
+    if getattr(agent, "_interrupt_requested", False):
+        return _stop()
     if _verify_nudge2:
         agent._pre_verify_nudges = _attempt + 1
         final_msg["finish_reason"] = "verify_hook_continue"
@@ -197,6 +216,8 @@ def apply_stop_gates(
         return verdict
 
     _kanban_nudge = _kanban_stop_nudge(agent, messages)
+    if getattr(agent, "_interrupt_requested", False):
+        return _stop()
     if _kanban_nudge:
         agent._kanban_stop_nudges = getattr(agent, "_kanban_stop_nudges", 0) + 1
         final_msg["finish_reason"] = "kanban_terminal_required"

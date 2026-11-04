@@ -261,15 +261,24 @@ def _equivalent_needles(needle: list[str]) -> list[list[str]]:
     return candidates
 
 
+def _pytest_tokens(tokens: list[str]) -> list[str]:
+    """Normalize only Python's pytest module invocation, not arbitrary interpreters."""
+    if len(tokens) >= 3 and tokens[1:3] == ["-m", "pytest"]:
+        name = tokens[0].replace("\\", "/").rsplit("/", 1)[-1]
+        if re.fullmatch(r"(?:python(?:\d+(?:\.\d+)*)?|py)(?:\.exe)?", name, re.IGNORECASE):
+            return ["pytest", *tokens[3:]]
+    return tokens
+
+
 def _find_canonical_match(command: str, canonical_commands: list[str], exit_code: int) -> Optional[tuple[str, list[str]]]:
     """Return ``(canonical, trailing_args)`` for the first detected command."""
     segments = _split_shell_segments(command)
     for canonical in canonical_commands:
-        needle = _canonical_tokens(canonical)
+        needle = _pytest_tokens(_canonical_tokens(canonical))
         if not needle:
             continue
         for index, segment in enumerate(segments):
-            candidate_tokens = _strip_command_prefix(segment.tokens)
+            candidate_tokens = _pytest_tokens(_strip_command_prefix(segment.tokens))
             for candidate in _equivalent_needles(needle):
                 if candidate_tokens[:len(candidate)] == candidate and _exit_status_is_attributable(segments, index, exit_code):
                     return canonical, candidate_tokens[len(candidate):]
@@ -303,12 +312,22 @@ def _is_under(token: str, base: str | Path | None) -> bool:
 
 
 def _is_temp_script_path(token: str, root: str | Path | None) -> bool:
-    """An ad-hoc verify script: prefixed name, under the temp dir, outside the repo."""
+    """Reserved helper in active scratch, excluding ordinary workspace scripts.
+
+    Scratch can itself be nested below an ancestor workspace (e.g. the Hermes
+    home). It is still excluded; a workspace located inside scratch is not.
+    """
     try:
         name = Path(token).expanduser().name
     except Exception:
         return False
-    return name.startswith(_AD_HOC_SCRIPT_NAME_PREFIXES) and _is_under(token, tempfile.gettempdir()) and not _is_under(token, root)
+    scratch = Path(tempfile.gettempdir()).resolve()
+    nested_scratch = bool(root and _is_under(str(scratch), root) and scratch != Path(root).resolve())
+    return (
+        name.startswith(_AD_HOC_SCRIPT_NAME_PREFIXES)
+        and _is_under(token, scratch)
+        and (not _is_under(token, root) or nested_scratch)
+    )
 
 
 def _is_interpreter_token(token: str) -> bool:
@@ -440,7 +459,9 @@ def classify_verification_command(
     if match is not None:
         canonical, trailing_args = match
         kind = _kind_for_command(canonical)
-        scope = "targeted" if any(map(_looks_like_target, trailing_args)) else "full"
+        selectors = {"-k", "-m", "--lf", "--last-failed", "--deselect", "--stepwise", "--sw", "--pyargs"}
+        selected = any(arg.split("=", 1)[0] in selectors for arg in trailing_args)
+        scope = "targeted" if selected or any(map(_looks_like_target, trailing_args)) else "full"
     else:
         if verify_commands or _find_ad_hoc_match(command, facts.get("root"), int(exit_code)) is None:
             return None
@@ -511,15 +532,8 @@ def _insert_evidence(evidence: VerificationEvidence) -> dict[str, Any]:
             " changed_paths_json = '[]'",
             (e.session_id, e.root, event_id),
         )
-        # A full passing ``hermes verify`` proves the workspace. Partial or
-        # failed runs must not wipe another session's edit record (#103650).
-        if e.kind == "verify" and e.status == "passed" and e.scope == "full":
-            conn.execute(
-                "UPDATE verification_state"
-                " SET last_event_id = ?, last_edit_at = NULL, changed_paths_json = '[]'"
-                " WHERE root = ? AND session_id != ?",
-                (event_id, e.root, e.session_id),
-            )
+        # There is no verification-start snapshot or tested-content identity in
+        # this receipt. Completion time/root cannot certify another session's edits.
         _prune_old_events(conn, session_id=e.session_id, root=e.root)
         conn.commit()
 
@@ -538,7 +552,9 @@ def mark_workspace_edited(
 
     sid = str(session_id or "default")
     root = _root_for(facts, cwd)
-    changed_paths = sorted({str(p) for p in (paths or []) if p})
+    changed_paths = sorted({str(p) for p in (paths or []) if p and not _is_temp_script_path(str(p), root)})
+    if paths and not changed_paths:
+        return None
     edited_at = _utc_now()
 
     with _DB_LOCK, _transaction() as conn:
@@ -563,32 +579,12 @@ def mark_workspace_edited(
     return {"session_id": sid, "root": root, "last_edit_at": edited_at, "changed_paths": changed_paths}
 
 
-def _newest_workspace_verify(
-    conn: sqlite3.Connection, *, root: str, since: str | None
-) -> Optional[sqlite3.Row]:
-    """Latest full passing ``hermes verify`` for ``root``, optionally not older than ``since``."""
-    if since:
-        return conn.execute(
-            "SELECT * FROM verification_events"
-            " WHERE root = ? AND kind = 'verify' AND status = 'passed' AND scope = 'full'"
-            " AND created_at >= ?"
-            " ORDER BY id DESC LIMIT 1",
-            (root, since),
-        ).fetchone()
-    return conn.execute(
-        "SELECT * FROM verification_events"
-        " WHERE root = ? AND kind = 'verify' AND status = 'passed' AND scope = 'full'"
-        " ORDER BY id DESC LIMIT 1",
-        (root,),
-    ).fetchone()
-
-
 def verification_status(*, session_id: str | None, cwd: str | Path | None) -> dict[str, Any]:
     """Return the best known verification state for a session/workspace.
 
-    Evidence recorded before the latest edit is reported as ``stale``. A
-    ``hermes verify`` event for the same ``root`` that is at least as new as
-    that edit satisfies the guard even if another session recorded it.
+    Evidence recorded before the latest edit is reported as ``stale``. Foreign
+    receipts never satisfy this session: sharing needs tested-content identity,
+    which the current recording API does not supply.
     """
     if not _ledger_enabled():
         return {"status": "disabled", "evidence": None}
@@ -608,14 +604,12 @@ def verification_status(*, session_id: str | None, cwd: str | Path | None) -> di
             return {"status": "unverified", "evidence": None, "root": root, "session_id": sid, "changed_paths": []}
         event = None
         if state["last_event_id"] is not None:
-            event = conn.execute("SELECT * FROM verification_events WHERE id = ?", (state["last_event_id"],)).fetchone()
+            event = conn.execute(
+                "SELECT * FROM verification_events WHERE id = ? AND session_id = ? AND root = ?",
+                (state["last_event_id"], sid, root),
+            ).fetchone()
         last_edit_at = state["last_edit_at"]
         stale = bool(event is not None and last_edit_at and last_edit_at > event["created_at"])
-        if event is None or stale:
-            shared = _newest_workspace_verify(conn, root=root, since=last_edit_at)
-            if shared is not None:
-                event = shared
-                stale = False
 
         result = {
             "evidence": None, "root": root, "session_id": sid,

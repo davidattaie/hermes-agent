@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from agent.verify.recipes import Recipe
+from agent.verify.python_environment import isolated_recipe
 
 DEFAULT_PHASE_TIMEOUT = 600.0
 DEFAULT_READY_TIMEOUT = 60.0
@@ -93,10 +94,11 @@ def _tail(text: str, limit: int = _TAIL_CHARS) -> str:
 def _run_phase_command(
     phase: str, command: str, root: Path, timeout: float,
     on_output: Callable[[str], None] | None = None,
+    env: dict[str, str] | None = None,
 ) -> PhaseResult:
     started = time.monotonic()
     try:
-        proc = subprocess.run(command, cwd=str(root), timeout=timeout, **_SUBPROCESS_KW, check=False)
+        proc = subprocess.run(command, cwd=str(root), timeout=timeout, env=env, **_SUBPROCESS_KW, check=False)
         output, exit_code, timed_out = proc.stdout or "", proc.returncode, False
     except subprocess.TimeoutExpired as exc:
         raw = exc.output
@@ -166,14 +168,15 @@ def _terminate_process_group(proc: subprocess.Popen) -> None:
 
 
 def _run_start_phase(
-    recipe: Recipe, root: Path, ready_timeout: float, port_override: int | None = None
+    recipe: Recipe, root: Path, ready_timeout: float, port_override: int | None = None,
+    env: dict[str, str] | None = None,
 ) -> ReadinessResult:
     assert recipe.start is not None
     port = port_override or recipe.port or 8000
     url = f"http://127.0.0.1:{port}{recipe.readiness_path}"
     started = time.monotonic()
     # start_new_session: own process group for clean teardown.
-    proc = subprocess.Popen(recipe.start, cwd=str(root), start_new_session=True, **_SUBPROCESS_KW)
+    proc = subprocess.Popen(recipe.start, cwd=str(root), env=env, start_new_session=True, **_SUBPROCESS_KW)
     output = ""
     try:
         ready, status, error = _poll_readiness(url, ready_timeout)
@@ -230,6 +233,13 @@ def run_verify(
     root = Path(root)
     selected = tuple(phases) if phases else PHASE_ORDER + ("start",)
     result = VerifyResult(recipe_name=recipe.name)
+    env = None
+    if recipe.isolated_python:
+        try:
+            recipe, env = isolated_recipe(root, recipe)
+        except ValueError as exc:
+            result.phases.append(PhaseResult("environment", "validate project .venv", 1, 0.0, str(exc)))
+            return result
 
     mutating = ("build" in selected) or ("start" in selected and not skip_start)
     if recipe.kind == "compose" and mutating:
@@ -250,11 +260,11 @@ def run_verify(
         if phase not in selected:
             continue
         for command in getattr(recipe, phase):
-            phase_result = _run_phase_command(phase, command, root, phase_timeout, on_output)
+            phase_result = _run_phase_command(phase, command, root, phase_timeout, on_output, env=env)
             result.phases.append(phase_result)
             if not phase_result.ok and stop_on_failure:
                 return result
 
     if not skip_start and "start" in selected and recipe.start and all(p.ok for p in result.phases):
-        result.readiness = _run_start_phase(recipe, root, ready_timeout, port_override)
+        result.readiness = _run_start_phase(recipe, root, ready_timeout, port_override, env=env)
     return result
