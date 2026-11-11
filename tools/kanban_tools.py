@@ -24,7 +24,7 @@ from tools.kanban_tools_schemas import (
     KANBAN_ATTACH_URL_SCHEMA, KANBAN_ATTACHMENTS_SCHEMA, KANBAN_BLOCK_SCHEMA, KANBAN_COMMENT_SCHEMA,
     KANBAN_COMPLETE_SCHEMA, KANBAN_CREATE_SCHEMA, KANBAN_HEARTBEAT_SCHEMA, KANBAN_LINK_SCHEMA,
     KANBAN_LIST_SCHEMA, KANBAN_REQUEST_CHANGES_SCHEMA, KANBAN_REQUEST_REVIEW_SCHEMA,
-    KANBAN_SCHEDULE_SCHEMA, KANBAN_SHOW_SCHEMA, KANBAN_UNBLOCK_SCHEMA)
+    KANBAN_SCHEDULE_SCHEMA, KANBAN_SHOW_SCHEMA, KANBAN_UNBLOCK_SCHEMA, KANBAN_WAIT_CI_SCHEMA)
 
 logger = logging.getLogger(__name__)
 
@@ -109,7 +109,7 @@ def _check_kanban_orchestrator_mode() -> bool:
 # would silently skip the run-ownership CAS in kanban_db. Non-lifecycle tools
 # (heartbeat / attach / attach_url) do not terminate a run and are not gated.
 _RUN_LIFECYCLE_TOOLS = frozenset({
-    "kanban_complete", "kanban_block", "kanban_schedule",
+    "kanban_complete", "kanban_block", "kanban_schedule", "kanban_wait_ci",
     "kanban_request_review", "kanban_request_changes",
 })
 
@@ -870,6 +870,24 @@ def _handle_schedule(args: dict, **kw) -> str:
         return _ok_landed(kb, conn, tid, "scheduled", reason=reason)
 
 
+@_kanban_handler("kanban_wait_ci")
+def _handle_wait_ci(args: dict, **kw) -> str:
+    """Park as a waiting_ci hold (exact-head CI pending); auto-requeues to review."""
+    from hermes_cli import kanban_waiting_ci as wci
+    tid = _worker_guard("kanban_wait_ci", args)
+    pr = args.get("pr")
+    _check(isinstance(pr, int) and not isinstance(pr, bool), "pr must be an integer")
+    with _board(args.get("board")) as (kb, conn):
+        task = kb.get_task(conn, tid)
+        _check(not (task and task.goal_mode), "goal_mode tasks cannot be parked; use kanban_complete")
+        try:
+            rec = wci.wait_ci(conn, tid, str(args.get("repo") or ""), pr, str(args.get("head_sha") or ""),
+                              expected_run_id=_worker_run_id(tid))
+        except wci.WaitCiRefused as exc:
+            raise _Reject(f"wait_ci refused: {exc}")
+        return _ok_landed(kb, conn, tid, "scheduled", waiting_ci=rec)
+
+
 @_kanban_handler("kanban_request_review")
 def _handle_request_review(args: dict, **kw) -> str:
     """Move implementation into the first-class review phase."""
@@ -1298,6 +1316,7 @@ _TOOLS = (
     ("kanban_complete", KANBAN_COMPLETE_SCHEMA, _handle_complete, "✔"),
     ("kanban_block", KANBAN_BLOCK_SCHEMA, _handle_block, "⏸"),
     ("kanban_schedule", KANBAN_SCHEDULE_SCHEMA, _handle_schedule, "⏰"),
+    ("kanban_wait_ci", KANBAN_WAIT_CI_SCHEMA, _handle_wait_ci, "⏳"),
     ("kanban_request_review", KANBAN_REQUEST_REVIEW_SCHEMA, _handle_request_review, "👀"),
     ("kanban_request_changes", KANBAN_REQUEST_CHANGES_SCHEMA, _handle_request_changes, "↩"),
     ("kanban_heartbeat", KANBAN_HEARTBEAT_SCHEMA, _handle_heartbeat, "💓"),

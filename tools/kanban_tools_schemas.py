@@ -217,6 +217,26 @@ KANBAN_SCHEDULE_SCHEMA = _schema(
     [],
 )
 
+KANBAN_WAIT_CI_SCHEMA = _schema(
+    "kanban_wait_ci",
+    (
+        "Park your task as a waiting_ci hold when the ONLY thing blocking you is unfinished CI on the "
+        "exact PR head. Use this instead of kanban_block. The dispatcher re-checks every check run on "
+        "``head_sha`` and moves the task back to 'review' when all have completed (any conclusion; it "
+        "never approves - you re-judge exact-head green). A new push rebinds the hold to the new head; "
+        "budget exhaustion, closed PR or API/auth problems convert it to a real block with a named reason. "
+        "Refused when the PR head differs from ``head_sha`` or no check run is pending: then proceed or "
+        "use kanban_block normally."
+    ),
+    {
+        "task_id": _prop("string", _DESC_TASK_ID_DEFAULT),
+        "repo": _prop("string", "OWNER/REPO of the pull request."),
+        "pr": _prop("integer", "Pull request number."),
+        "head_sha": _prop("string", "Full 40-char PR head SHA whose CI you are waiting for."),
+    },
+    ["repo", "pr", "head_sha"],
+)
+
 
 KANBAN_REQUEST_REVIEW_SCHEMA = _schema(
     "kanban_request_review",

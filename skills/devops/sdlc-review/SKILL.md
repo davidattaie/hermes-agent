@@ -152,6 +152,18 @@ kanban_block(
 
 Explain the blocked decision and the smallest information needed to continue.
 
+#### Only CI is pending: wait, do not block
+
+If the sole thing stopping a verdict is unfinished CI on the exact PR head, do NOT `kanban_block`. Call:
+
+```text
+kanban_wait_ci(repo="<owner/name>", pr=<n>, head_sha="<full 40-char head>")
+```
+
+(CLI: `hermes kanban wait-ci <task> --repo ... --pr ... --head-sha ...`). The dispatcher watches every check run on that SHA and returns the card to `review` once all have completed, whatever their conclusion. It never approves: re-read the checks on the exact head and judge green yourself. A new push rebinds the hold to the new head. The tool refuses when the head differs or nothing is pending (then proceed or block normally). If the hold hits its budget, the PR closes, or GitHub/auth misbehaves, the card becomes a real `blocked` with a `waiting_ci_*` reason; do not re-park the same SHA. Non-CI blockers keep using `kanban_block`.
+
+The exact-head required-checks gate is agent-enforced and is the ACCEPTED MANUAL GATE for private repos without GitHub Pro or branch protection; `wait-ci` does not replace it.
+
 ### 4. Preserve role separation
 
 Do not edit the implementation while acting as reviewer. Request changes and let the implementer produce the next candidate; then independently verify that candidate in the next review run.
