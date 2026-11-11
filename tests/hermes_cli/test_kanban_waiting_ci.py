@@ -96,6 +96,29 @@ def test_legacy_pending_status_counts_as_pending(conn):
     assert status(conn, tid) == "scheduled"
 
 
+@pytest.mark.parametrize("final", ["success", "failure", "error"])
+def test_legacy_status_only_requeues_when_completed(conn, final):
+    tid = make_running(conn)
+    wci.wait_ci(conn, tid, REPO, PR, A, get=gh_get_for(
+        statuses=[{"context": "ci/x", "state": "pending", "id": 1}]))
+    assert status(conn, tid) == "scheduled"
+    done = [{"context": "ci/x", "state": final, "id": 2}]
+    out = wci.kanban_waiting_ci_sweep(conn, force=True, fetch=(
+        lambda r, p, h: wci.fetch_ci_state(r, p, h, get=gh_get_for(statuses=done))))
+    assert out == {tid: "requeued"} and status(conn, tid) == "review"
+    ev = kb._json_dict(events(conn, tid, "waiting_ci_requeued")[0]["payload"])
+    assert ev["checks"]["statuses"] == [{"context": "ci/x", "state": final}]
+
+
+def test_no_checks_at_all_still_hits_budget_guard(conn):
+    tid = make_running(conn)
+    park(conn, tid, max_attempts=1)
+    out = wci.kanban_waiting_ci_sweep(conn, force=True, fetch=lambda *a: ci())
+    assert out == {tid: "blocked"} and status(conn, tid) == "blocked"
+    ev = events(conn, tid, "blocked")[0]["payload"]
+    assert "no check runs appeared" in ev
+
+
 # 2 ---------------------------------------------------------------------------
 @pytest.mark.parametrize("conclusion", ["success", "failure"])
 def test_all_completed_requeues_to_review_not_done(conn, conclusion):

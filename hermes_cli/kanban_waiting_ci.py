@@ -286,7 +286,7 @@ def _evaluate(conn, hold: dict, now: int, fetch: Callable) -> str:
     runs = [r for r in state["runs"] if r["head_sha"] == hold["head_sha"]]
     state = {**state, "runs": runs}
     pending = _pending(state)
-    if not pending and runs:
+    if not pending and (runs or state["statuses"]):
         bad = [r["name"] for r in runs if r["conclusion"] in ("cancelled", "stale")]
         if bad:
             return _block(conn, hold, REASON_CANCELLED,
