@@ -4,8 +4,10 @@ from __future__ import annotations
 
 import sys
 import threading
+import time
 from contextlib import contextmanager, nullcontext
 from contextvars import copy_context
+from dataclasses import dataclass
 from typing import Dict, Iterator, Optional, Set
 
 from hermes_constants import hermes_home_key
@@ -24,6 +26,23 @@ _mcp_discovery_deferred: Optional[threading.Timer] = None
 # in this module (inline, background, deferred), so a ``-t terminal``
 # oneshot never cold-starts MCP subprocesses it cannot use.
 _mcp_server_filter: Optional[list[str]] = None
+
+# Retry pacing when every configured server failed to connect: 30s, 60s, ... capped at 1h per
+# profile home. ``_monotonic`` is the clock seam (tests inject a fake one).
+_RETRY_BASE_DELAY_S = 30.0
+_RETRY_MAX_DELAY_S = 3600.0
+_monotonic = time.monotonic
+_AGENT_PLUGIN_MARKER = "<agent-plugin-mcp>"
+
+
+@dataclass
+class _RetryBackoff:
+    attempt: int
+    next_at: float
+    servers: frozenset[str]
+
+
+_mcp_discovery_backoff: dict[str, _RetryBackoff] = {}
 
 
 def set_mcp_server_filter(toolsets: object) -> Optional[list[str]]:
@@ -51,17 +70,35 @@ def get_mcp_server_filter() -> Optional[list[str]]:
     return _mcp_server_filter
 
 
+def _configured_mcp_servers() -> frozenset[str]:
+    """Names of the MCP servers a discovery run would try: enabled and inside the ``-t`` filter.
+
+    Agent-plugin MCP servers cannot be enumerated without loading plugins, so they count as one
+    marker entry. Raises on a broken config; callers decide the fallback.
+    """
+    from hermes_cli.config import read_raw_config
+    from tools.mcp_tool_common import mcp_server_enabled
+
+    raw_config = read_raw_config() or {}
+    configured = raw_config.get("mcp_servers")
+    names = {
+        str(name)
+        for name, cfg in (configured.items() if isinstance(configured, dict) else ())
+        if mcp_server_enabled(cfg if isinstance(cfg, dict) else {})
+        and (_mcp_server_filter is None or name in _mcp_server_filter)
+    }
+    if not names:
+        from hermes_cli.agent_plugins import has_enabled_agent_plugin_mcp
+
+        if has_enabled_agent_plugin_mcp(raw_config):
+            names.add(_AGENT_PLUGIN_MARKER)
+    return frozenset(names)
+
+
 def _has_configured_mcp_servers() -> bool:
     """Cheap config probe so non-MCP users avoid importing the MCP stack."""
     try:
-        from hermes_cli.config import read_raw_config
-
-        raw_config = read_raw_config() or {}
-        if isinstance(raw_config.get("mcp_servers"), dict) and raw_config["mcp_servers"]:
-            return True
-        from hermes_cli.agent_plugins import has_enabled_agent_plugin_mcp
-
-        return has_enabled_agent_plugin_mcp(raw_config)
+        return bool(_configured_mcp_servers())
     except Exception:
         return True  # conservative: still try discovery in the background; startup can't block
 
@@ -90,6 +127,31 @@ def _servers_awaiting_connect() -> list[str]:
     return pending if _mcp_server_filter is None else [n for n in pending if n in _mcp_server_filter]
 
 
+def _claim_failed_run_retry(home_key: str, servers: Optional[frozenset[str]], logger) -> bool:
+    """Pace re-running discovery after a run that left nothing connected (caller holds the lock).
+
+    True = spawn now; the next attempt is then pushed out exponentially. A changed server set
+    restarts the schedule, since the failure may not apply to the new configuration.
+    """
+    backoff = _mcp_discovery_backoff.get(home_key)
+    servers_key = servers if servers is not None else frozenset()
+    if backoff is not None and backoff.servers != servers_key:
+        backoff = None
+    now = _monotonic()
+    if backoff is not None and now < backoff.next_at:
+        return False
+    attempt = 1 if backoff is None else backoff.attempt + 1
+    delay = min(_RETRY_BASE_DELAY_S * 2 ** (attempt - 1), _RETRY_MAX_DELAY_S)
+    _mcp_discovery_backoff[home_key] = _RetryBackoff(attempt, now + delay, servers_key)
+    logger.warning(
+        "Background MCP discovery previously exited with no connected servers; retrying "
+        "discovery thread (attempt %d, next retry in %ds if it fails again)",
+        attempt,
+        delay,
+    )
+    return True
+
+
 def start_background_mcp_discovery(*, logger, thread_name: str) -> None:
     """Spawn one background MCP discovery thread per profile home.
 
@@ -101,30 +163,36 @@ def start_background_mcp_discovery(*, logger, thread_name: str) -> None:
     """
     home_key = hermes_home_key()
     with _mcp_discovery_lock:
-        if home_key in _mcp_discovery_started:
-            thread = _mcp_discovery_thread.get(home_key)
-            if thread is not None and thread.is_alive():
-                return
+        started = home_key in _mcp_discovery_started
+        thread = _mcp_discovery_thread.get(home_key)
+        if started and thread is not None and thread.is_alive():
+            return
+        try:
+            servers: Optional[frozenset[str]] = _configured_mcp_servers()
+        except Exception:
+            servers = None  # conservative: unreadable config still tries discovery
+        if servers is not None and not servers:
+            # Nothing to connect: not a failed run, so no retry bookkeeping and no "started" mark;
+            # the next call re-reads config, so a later ``hermes mcp add`` still connects (#76954).
+            _mcp_discovery_backoff.pop(home_key, None)
+            return
+        if started:
             try:
                 connected = _any_mcp_connected()
                 pending = _servers_awaiting_connect() if connected else []
             except Exception:
                 return
-            if connected and not pending:
-                return
             if connected:
+                _mcp_discovery_backoff.pop(home_key, None)
+                if not pending:
+                    return
                 logger.info("MCP server(s) %s not connected yet; running discovery", ", ".join(pending))
-            else:
-                logger.warning(
-                    "Background MCP discovery previously exited with no connected "
-                    "servers; retrying discovery thread"
-                )
+            elif not _claim_failed_run_retry(home_key, servers, logger):
+                return
             _mcp_discovery_started.discard(home_key)
             _mcp_discovery_thread.pop(home_key, None)
 
         _mcp_discovery_started.add(home_key)
-        if not _has_configured_mcp_servers():
-            return
 
         # Bare threads start from an empty context: run discovery under a copy of the caller's, so
         # the context-local HERMES_HOME override (multi-profile dashboard/desktop backends, #67605)
