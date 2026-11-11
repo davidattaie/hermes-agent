@@ -328,6 +328,13 @@ _SPECS = [
         _arg("reason", nargs="*", help="Reason/timing note (also appended as a comment)"),
         _bulk_ids("schedule"),
     ], help="Park one or more tasks in Scheduled (waiting on time, not human input)"),
+    _cmd("wait-ci", [
+        _TASK_ID,
+        _arg("--repo", required=True, help="OWNER/REPO of the PR"),
+        _arg("--pr", type=int, required=True, help="PR number"),
+        _arg("--head-sha", required=True, help="Full 40-char PR head SHA being waited on"),
+        _arg("--max-wait-hours", type=float, default=6.0, help="Budget before converting to a named block"),
+    ], help="Park a task as a waiting_ci hold (only CI is pending); auto-requeues to review"),
     _cmd("unblock", [
         _reason("Optional reason/note — recorded as a comment before unblocking. Quote multi-word reasons."),
         _TASK_IDS,

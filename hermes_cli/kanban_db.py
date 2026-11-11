@@ -971,6 +971,24 @@ CREATE TABLE IF NOT EXISTS kanban_notify_subs (
     PRIMARY KEY (task_id, platform, chat_id, thread_id)
 );
 
+-- waiting_ci holds: a ``scheduled`` task parked until the exact PR head's
+-- check runs finish (see hermes_cli/kanban_waiting_ci.py). Additive table.
+CREATE TABLE IF NOT EXISTS kanban_waiting_ci (
+    task_id       TEXT PRIMARY KEY,
+    repo          TEXT NOT NULL,
+    pr            INTEGER NOT NULL,
+    head_sha      TEXT NOT NULL,
+    since         INTEGER NOT NULL,
+    attempts      INTEGER NOT NULL DEFAULT 0,
+    max_wait_s    INTEGER NOT NULL,
+    max_attempts  INTEGER NOT NULL,
+    last_checked  INTEGER,
+    infra_errors  INTEGER NOT NULL DEFAULT 0,
+    rebinds       INTEGER NOT NULL DEFAULT 0,
+    state         TEXT NOT NULL DEFAULT 'active',
+    outcome       TEXT
+);
+
 CREATE INDEX IF NOT EXISTS idx_tasks_status          ON tasks(status);
 CREATE INDEX IF NOT EXISTS idx_links_child           ON task_links(child_id);
 CREATE INDEX IF NOT EXISTS idx_links_parent          ON task_links(parent_id);
@@ -3814,7 +3832,7 @@ def archive_task(conn: sqlite3.Connection, task_id: str, *, signal_fn=None) -> b
 def _delete_task_relations(conn: sqlite3.Connection, task_id: str) -> None:
     """Delete every row referencing ``task_id`` (schema has no ON DELETE CASCADE)."""
     conn.execute("DELETE FROM task_links WHERE parent_id = ? OR child_id = ?", (task_id, task_id))
-    for table in ("task_comments", "task_events", "task_runs", "kanban_notify_subs"):
+    for table in ("task_comments", "task_events", "task_runs", "kanban_notify_subs", "kanban_waiting_ci"):
         conn.execute(f"DELETE FROM {table} WHERE task_id = ?", (task_id,))
 
 
@@ -3842,11 +3860,14 @@ def delete_task(conn: sqlite3.Connection, task_id: str) -> bool:
 
 def schedule_task(
     conn: sqlite3.Connection, task_id: str, *, reason: Optional[str] = None,
-    expected_run_id: Optional[int] = None,
+    expected_run_id: Optional[int] = None, event_extra: Optional[dict] = None,
+    in_txn: bool = False,
 ) -> bool:
     """Park in ``scheduled`` (waiting on time, not a human; not dispatchable)
-    until ``unblock_task`` re-gates it."""
-    with write_txn(conn):
+    until ``unblock_task`` re-gates it. ``event_extra`` is merged into the
+    ``scheduled`` event payload (structured parks such as ``waiting_ci``);
+    ``in_txn`` lets a composing caller run this inside its own write txn."""
+    with write_txn(conn, allow_nested=in_txn):
         params: list[Any] = [task_id]
         sql = """
             UPDATE tasks
@@ -3865,7 +3886,7 @@ def schedule_task(
         run_id = _end_or_synthesize_run(
             conn, task_id, outcome="scheduled", status="scheduled", summary=reason, synthesize=bool(reason),
         )
-        _append_event(conn, task_id, "scheduled", {"reason": reason}, run_id=run_id)
+        _append_event(conn, task_id, "scheduled", {"reason": reason, **(event_extra or {})}, run_id=run_id)
         return True
 
 

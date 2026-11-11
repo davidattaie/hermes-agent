@@ -208,7 +208,7 @@ def _profile_author() -> str:
 _DELEGATED_CHILD_DENIED_ACTIONS: frozenset[str] = frozenset({
     "init", "create", "swarm", "assign", "reclaim", "reassign", "link", "unlink",
     "claim", "comment", "attach", "attach-rm", "complete", "edit", "block",
-    "schedule", "unblock", "promote", "archive", "dispatch", "daemon", "repair",
+    "schedule", "wait-ci", "unblock", "promote", "archive", "dispatch", "daemon", "repair",
     "heartbeat", "notify-subscribe", "notify-unsubscribe", "specify", "decompose",
     "request-review", "request-changes", "reopen-review",
     "gc",
@@ -1017,6 +1017,21 @@ def _cmd_schedule(args: argparse.Namespace) -> int:
         return _bulk_apply(ids, op, lambda tid: f"Scheduled {tid}{suffix}", lambda tid: f"cannot schedule {tid}")
 
 
+def _cmd_wait_ci(args: argparse.Namespace) -> int:
+    from hermes_cli import kanban_waiting_ci as wci
+    try:
+        with kbc.connect_closing() as conn:
+            rec = wci.wait_ci(
+                conn, args.task_id, args.repo, args.pr, args.head_sha,
+                expected_run_id=_worker_run_id_for(args.task_id),
+                max_wait_s=int(args.max_wait_hours * 3600))
+    except (wci.WaitCiRefused, ValueError) as exc:
+        return _err(f"wait-ci refused: {exc}")
+    print(f"Parked {args.task_id} as waiting_ci on {rec['repo']}#{rec['pr']} @ {rec['head_sha'][:12]} "
+          f"(auto-requeue to review when CI completes; pending: {', '.join(rec['pending'][:5])})")
+    return 0
+
+
 def _cmd_unblock(args: argparse.Namespace) -> int:
     if os.environ.get("HERMES_KANBAN_TASK"):
         return _err("kanban unblock is orchestrator-only; workers must hand off their assigned task")
@@ -1327,7 +1342,7 @@ _HANDLERS = {
     "comment": _cmd_comment, "attach": _cmd_attach,
     "attachments": _cmd_attachments, "attach-rm": _cmd_attach_rm,
     "complete": _cmd_complete, "edit": _cmd_edit, "block": _cmd_block,
-    "schedule": _cmd_schedule, "unblock": _cmd_unblock,
+    "schedule": _cmd_schedule, "wait-ci": _cmd_wait_ci, "unblock": _cmd_unblock,
     "request-review": _cmd_request_review, "request-changes": _cmd_request_changes,
     "reopen-review": _cmd_reopen_review, "promote": _cmd_promote,
     "archive": _cmd_archive, "tail": _cmd_tail, "dispatch": _cmd_dispatch,

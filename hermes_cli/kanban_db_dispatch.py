@@ -2364,6 +2364,13 @@ def _dispatch_once_locked(
         conn, result, stale_timeout_seconds=stale_timeout_seconds,
         failure_limit=failure_limit, reconcile_orphans=reconcile_orphans, board=board,
     )
+    if not dry_run:
+        # waiting_ci holds: scheduled -> review / blocked (never ready/done).
+        try:
+            from hermes_cli.kanban_waiting_ci import kanban_waiting_ci_sweep
+            kanban_waiting_ci_sweep(conn)
+        except Exception:  # never lose the tick
+            pass
     may_spawn, spawn_budget = _tick_spawn_budget(
         conn, result, max_spawn=max_spawn, max_in_progress=max_in_progress, board=board,
     )
