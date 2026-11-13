@@ -999,6 +999,37 @@ class TestSkillsEndpoint:
                 for entry in data["data"]:
                     assert set(entry.keys()) >= {"name", "description", "category"}
 
+    @pytest.mark.asyncio
+    async def test_skills_call_matches_find_all_skills_signature(self, adapter):
+        """Regression: the handler once passed a kwarg find_all_skills does not accept
+        (include_editorial), so every real GET /v1/skills returned 500. A plain
+        MagicMock swallows any kwargs; autospec enforces the real signature."""
+        fake_skills = [{"name": "github", "description": "GitHub", "category": "github"}]
+        with patch(
+            "tools.skills_tool.find_all_skills",
+            autospec=True,
+            return_value=list(fake_skills),
+        ) as find_all:
+            app = _create_app(adapter)
+            async with TestClient(TestServer(app)) as cli:
+                resp = await cli.get("/v1/skills")
+                assert resp.status == 200
+                data = await resp.json()
+        assert data["object"] == "list"
+        assert [s["name"] for s in data["data"]] == ["github"]
+        find_all.assert_called_once_with(skip_disabled=False)
+
+    @pytest.mark.asyncio
+    async def test_skills_real_enumeration_returns_200(self, adapter):
+        """Regression: GET /v1/skills with the real find_all_skills must not 500."""
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.get("/v1/skills")
+            assert resp.status == 200
+            data = await resp.json()
+        assert data["object"] == "list"
+        assert isinstance(data["data"], list)
+
 
 class TestToolsetsEndpoint:
     @pytest.mark.asyncio
