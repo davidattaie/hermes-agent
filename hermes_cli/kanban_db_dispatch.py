@@ -2813,6 +2813,9 @@ def _default_spawn(task: Task, workspace: str, *, board: Optional[str] = None) -
     # actually happens.
     if workspace and os.path.isabs(workspace) and os.path.isdir(workspace):
         env["TERMINAL_CWD"] = workspace
+    # Authoritative repo paths: workers must not guess (hermezify/buildup/worktrees/authify).
+    from hermes_cli.kanban_repo_map import apply_repo_env
+    apply_repo_env(env)
     if task.branch_name:
         env["HERMES_KANBAN_BRANCH"] = task.branch_name
     if task.current_run_id is not None:
