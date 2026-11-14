@@ -1,0 +1,36 @@
+version: 1
+# Exact-head gate for the fork, replacing GitHub Actions (disabled on the fork).
+jobs:
+  mcp-startup:
+    vm: linux
+    timeout: 30m
+    steps:
+      - name: Install hermes-agent and test dependencies
+        run: |
+          python3 --version
+          python3 -c 'import sys; assert sys.version_info >= (3, 11), sys.version'
+          python3 -m venv "$HOME/venv"
+          "$HOME/venv/bin/pip" install -q --disable-pip-version-check -e . pytest==9.1.1 pytest-asyncio==1.3.0
+      - name: MCP startup, discovery, TUI-owner and tool-refresh suites
+        run: |
+          TZ=UTC LANG=C.UTF-8 PYTHONHASHSEED=0 "$HOME/venv/bin/python" -m pytest -q -p no:cacheprovider \
+            tests/hermes_cli/test_mcp_startup.py \
+            tests/hermes_cli/test_mcp_discovery_timing.py \
+            tests/hermes_cli/test_serve_mcp_discovery_after_bind.py \
+            tests/hermes_cli/test_tui_launcher_skips_plugin_discovery.py \
+            tests/tools/test_refresh_agent_mcp_tools.py \
+            tests/tui_gateway/test_mcp_late_refresh_thread_owner.py \
+            tests/tui_gateway/test_tui_entry_mcp_owner.py
+  backoff:
+    vm: linux
+    timeout: 30m
+    steps:
+      - name: Install hermes-agent and test dependencies
+        run: |
+          python3 --version
+          python3 -c 'import sys; assert sys.version_info >= (3, 11), sys.version'
+          python3 -m venv "$HOME/venv"
+          "$HOME/venv/bin/pip" install -q --disable-pip-version-check -e . pytest==9.1.1 pytest-asyncio==1.3.0
+      - name: MCP discovery backoff tests
+        run: |
+          TZ=UTC LANG=C.UTF-8 PYTHONHASHSEED=0 "$HOME/venv/bin/python" -m pytest -q -p no:cacheprovider tests/hermes_cli/test_mcp_startup_backoff.py
