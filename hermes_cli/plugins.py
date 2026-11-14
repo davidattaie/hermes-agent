@@ -744,7 +744,8 @@ class PluginContext(PluginCapabilityCtxMixin):
             return
         launch_scope = hermes_home_key(get_process_hermes_home())
         if self._manager.scope_key != launch_scope:
-            logger.warning(
+            # Expected for every non-launch profile that bundles the provider; debug, not warning.
+            logger.debug(
                 "Plugin '%s' tried to register dashboard-auth provider %r "
                 "from profile scope %s; ignoring it because dashboard auth "
                 "is owned by launch scope %s.",
