@@ -7,10 +7,12 @@ jobs:
     steps:
       - name: Install hermes-agent and test dependencies
         run: |
-          python3 --version
-          python3 -c 'import sys; assert sys.version_info >= (3, 11), sys.version'
-          python3 -m venv "$HOME/venv"
-          "$HOME/venv/bin/pip" install -q --disable-pip-version-check -e . pytest==9.1.1 pytest-asyncio==1.3.0
+          # pyproject pins its runtime dependencies for Python >= 3.14 only; the VM ships 3.12.
+          python3 -m venv "$HOME/uv"
+          "$HOME/uv/bin/pip" install -q --disable-pip-version-check uv
+          "$HOME/uv/bin/uv" venv --python 3.14 "$HOME/venv"
+          "$HOME/venv/bin/python" --version
+          "$HOME/uv/bin/uv" pip install --python "$HOME/venv/bin/python" -e . pytest==9.1.1 pytest-asyncio==1.3.0
       - name: MCP startup, discovery, TUI-owner and tool-refresh suites
         run: |
           TZ=UTC LANG=C.UTF-8 PYTHONHASHSEED=0 "$HOME/venv/bin/python" -m pytest -q -p no:cacheprovider \
@@ -27,10 +29,12 @@ jobs:
     steps:
       - name: Install hermes-agent and test dependencies
         run: |
-          python3 --version
-          python3 -c 'import sys; assert sys.version_info >= (3, 11), sys.version'
-          python3 -m venv "$HOME/venv"
-          "$HOME/venv/bin/pip" install -q --disable-pip-version-check -e . pytest==9.1.1 pytest-asyncio==1.3.0
+          # pyproject pins its runtime dependencies for Python >= 3.14 only; the VM ships 3.12.
+          python3 -m venv "$HOME/uv"
+          "$HOME/uv/bin/pip" install -q --disable-pip-version-check uv
+          "$HOME/uv/bin/uv" venv --python 3.14 "$HOME/venv"
+          "$HOME/venv/bin/python" --version
+          "$HOME/uv/bin/uv" pip install --python "$HOME/venv/bin/python" -e . pytest==9.1.1 pytest-asyncio==1.3.0
       - name: MCP discovery backoff tests
         run: |
           TZ=UTC LANG=C.UTF-8 PYTHONHASHSEED=0 "$HOME/venv/bin/python" -m pytest -q -p no:cacheprovider tests/hermes_cli/test_mcp_startup_backoff.py
