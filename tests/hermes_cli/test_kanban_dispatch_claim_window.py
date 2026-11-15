@@ -103,7 +103,8 @@ def test_reassign_before_default_fill_does_not_log_phantom_assignment(
     assert res.spawned == []
     assert res.auto_assigned_default == []
     assert res.skipped_unassigned == []
-    assert assigned_payloads == [{"assignee": "worker-b", "from": None}]
+    # handoff_receipt (continuity) stamps the newest observed comment id on every handoff.
+    assert assigned_payloads == [{"assignee": "worker-b", "from": None, "pr_comment_id": 0}]
 
 
 def test_failed_default_fill_write_still_buckets_unassigned(
