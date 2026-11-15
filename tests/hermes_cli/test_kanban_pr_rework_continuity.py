@@ -5,6 +5,7 @@ import pytest
 
 from hermes_cli import kanban_db as kb, kanban_db_connect as kbc
 from hermes_cli import kanban_db_dispatch as dispatch
+from hermes_cli import kanban_db_default_assignee as default_assignee
 
 PR = "https://github.com/example/project/pull/42"
 
@@ -92,7 +93,7 @@ def test_default_assignment_cannot_reuse_superseded_permit(board, default_profil
     assert dispatch.check_respawn_guard(board, tid) is None
     assert kb.assign_task(board, tid, None)
     assert dispatch.check_respawn_guard(board, tid) == "active_pr"
-    assert dispatch._apply_default_assignee(board, tid, default_profile, dry_run=False)
+    assert default_assignee.apply_default_assignee(board, tid, default_profile, dry_run=False)
     task = kb.get_task(board, tid)
     assert task is not None and task.assignee == default_profile
     assert dispatch.check_respawn_guard(board, tid) == "active_pr"
@@ -118,7 +119,7 @@ def test_noop_preserves_unused_permit_without_refreshing_it(board, structured):
 def test_structured_permit_cannot_survive_unassignment_and_default_return(board):
     tid = rework(board)
     assert kb.assign_task(board, tid, None)
-    assert dispatch._apply_default_assignee(board, tid, "dev", dry_run=False)
+    assert default_assignee.apply_default_assignee(board, tid, "dev", dry_run=False)
     assert dispatch.check_respawn_guard(board, tid) == "active_pr"
 
 
@@ -149,5 +150,5 @@ def test_noop_and_default_without_older_permit_remain_guarded(board):
     assert kb.assign_task(board, tid, "dev")
     assert dispatch.check_respawn_guard(board, tid) == "active_pr"
     assert kb.assign_task(board, tid, None)
-    assert dispatch._apply_default_assignee(board, tid, "dev", dry_run=False)
+    assert default_assignee.apply_default_assignee(board, tid, "dev", dry_run=False)
     assert dispatch.check_respawn_guard(board, tid) == "active_pr"

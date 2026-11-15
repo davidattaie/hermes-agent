@@ -68,8 +68,11 @@ def apply_repo_env(env: MutableMapping[str, str], repos: Optional[Mapping[str, s
     env[ROOT_ENV] = str(repos_root())
     for name, path in repos.items():
         var = _env_name(name)
-        if var != "_REPO" and not env.get(var):
-            env[var] = path
+        if var == "_REPO" or env.get(var):
+            continue
+        # Workers get a scrubbed env (build_subprocess_env), so an operator override set on the
+        # dispatcher process itself is carried through here rather than via the copied env.
+        env[var] = os.environ.get(var) or path
 
 
 def render_repo_section(lines: list[str], title: str = "", body: Optional[str] = None,
