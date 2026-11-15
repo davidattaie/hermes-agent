@@ -574,8 +574,11 @@ def _resolve_chat_argv(
 
     # Without the attach URL, gatewayClient bootstraps through the profile's own
     # gateway (ui-tui/scripts/gateway_bootstrap.py) under the HERMES_HOME set above;
-    # it never spawns a standalone `tui_gateway.entry` writer.
-    if profile_dir is None and (gateway_ws_url := _build_gateway_ws_url()):
+    # it never spawns a standalone `tui_gateway.entry` writer. A standalone `hermes dashboard`
+    # has no session authority, so its in-memory gateway only offers legacy delivery: skip the
+    # attach there and let the default chat bootstrap through its profile's gateway too.
+    if (profile_dir is None and _dashboard_has_session_authority()
+            and (gateway_ws_url := _build_gateway_ws_url())):
         env["HERMES_TUI_GATEWAY_URL"] = gateway_ws_url
 
     return list(argv), str(cwd) if cwd else None, env
@@ -620,6 +623,12 @@ def _server_internal_ws_url(path: str, **extra_qs) -> Optional[str]:
     else:
         auth = {"token": _SESSION_TOKEN}
     return f"ws://{netloc}{path}?{urllib.parse.urlencode({**auth, **extra_qs})}"
+
+
+def _dashboard_has_session_authority() -> bool:
+    """True when this dashboard is gateway-hosted, so ``/api/ws`` admits durably."""
+    from hermes_cli.web_server import app
+    return getattr(app.state, "session_authority", None) is not None
 
 
 def _build_gateway_ws_url() -> Optional[str]:
