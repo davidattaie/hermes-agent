@@ -26,6 +26,31 @@ This is a reporting opportunity, not a guarantee that a model will heed the noti
 Ordinary conversations and delegated children do not inherit the automatic Kanban
 checkpoint; their iteration warning remains opt-in.
 
+### Dispatcher stuck incidents
+
+Both the embedded gateway dispatcher and standalone daemon retain their warning
+logs and escalate after **12 consecutive ticks** with pending ready work and no
+successful spawn. One incident per board/episode is created on the **main
+(`default`) board**, assigned to `olly`. It records the board, ready/review card
+ids, latest suppression reason, consecutive tick count, and first-stuck UTC ISO
+timestamp. Gateway detection retains its existing spawnable-ready/review probe;
+the standalone daemon retains its ready/unassigned probe.
+
+`HERMES_KANBAN_STUCK_INCIDENT_TICKS` overrides 12 with a positive integer;
+missing, malformed, zero, or negative values use 12. Set it in the dispatcher
+process environment (not a worker environment).
+
+The main board's `dispatcher_stuck_episodes` SQLite table retains the counter,
+start epoch (seconds with microsecond precision), and incident receipt across
+restarts. Creation and receipt commit atomically under a write transaction,
+using `dispatcher-stuck:<board>:<episode-start-epoch>` as the idempotency key.
+Further ticks, concurrent writers, restarts, and closing/archiving an incident
+do not create another incident in that episode. A successful spawn, empty ready
+queue, or paused dispatcher resets the episode; a later episode gets a new key.
+A failed incident write is logged and retried on the next tick without stopping
+the dispatcher. This escalation does not unblock, reassign, or otherwise alter
+the held-back cards or their gates.
+
 ### Two surfaces: the model talks through tools, you talk through the CLI
 
 The board has two front doors, both backed by the same `~/.hermes/kanban.db`:

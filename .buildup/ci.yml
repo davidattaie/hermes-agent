@@ -23,6 +23,29 @@ jobs:
             tests/tools/test_refresh_agent_mcp_tools.py \
             tests/tui_gateway/test_mcp_late_refresh_thread_owner.py \
             tests/tui_gateway/test_tui_entry_mcp_owner.py
+  stuck-incident:
+    vm: linux
+    timeout: 30m
+    steps:
+      - &stuck-install
+        name: Install isolated dispatcher test environment
+        run: |
+          python3 -m venv "$HOME/uv"
+          "$HOME/uv/bin/pip" install -q --disable-pip-version-check uv
+          "$HOME/uv/bin/uv" venv --python 3.14 "$HOME/venv"
+          "$HOME/uv/bin/uv" pip install --python "$HOME/venv/bin/python" -e . pytest==9.1.1 pytest-asyncio==1.3.0 'pytest-cov>=7,<8' 'coverage>=7.10,<8'
+      - name: Dispatcher stuck-episode acceptance tests
+        run: |
+          HERMES_RUNTIME_DIR="$PWD/.dev-tools" HERMES_PYTHON="$HOME/venv/bin/python" scripts/run_tests.sh tests/hermes_cli/test_kanban_stuck_incident.py --file-retries 0
+  coverage:
+    vm: linux
+    timeout: 30m
+    steps:
+      - *stuck-install
+      - name: Preserve measured 100 percent stuck-helper line coverage
+        run: |
+          HERMES_RUNTIME_DIR="$PWD/.dev-tools" HERMES_PYTHON="$HOME/venv/bin/python" scripts/run_tests.sh tests/hermes_cli/test_kanban_stuck_incident.py --file-retries 0 --cov=hermes_cli.kanban_db_dispatch --cov-report=json:stuck-coverage.json
+          "$HOME/venv/bin/python" -c 'import json; f=json.load(open("stuck-coverage.json"))["files"]["hermes_cli/kanban_db_dispatch.py"]["functions"]["note_stuck_tick"]["summary"]; print("note_stuck_tick coverage:", f); assert f["percent_covered"] >= 100'
   backoff:
     vm: linux
     timeout: 30m
