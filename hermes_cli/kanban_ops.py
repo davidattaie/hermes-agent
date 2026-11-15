@@ -214,7 +214,13 @@ def _cmd_daemon(args: argparse.Namespace) -> int:
             return False
 
     def _on_tick(res):
-        ready_pending = bool(res.skipped_unassigned) or _ready_queue_nonempty()
+        from agent.estop import is_engaged
+        paused = is_engaged()
+        ready_pending = not paused and (bool(res.skipped_unassigned) or _ready_queue_nonempty())
+        kbd.note_stuck_tick(
+            board=kb.get_current_board(), ready_pending=ready_pending,
+            spawned=bool(res.spawned), results=[res], paused=paused,
+        )
         if ready_pending and not res.spawned:
             health_state["bad_ticks"] += 1
         else:

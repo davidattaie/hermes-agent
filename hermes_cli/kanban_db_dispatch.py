@@ -183,6 +183,86 @@ def describe_suppression(results: Iterable[Optional["DispatchResult"]]) -> str:
     return ", ".join(parts)
 
 
+STUCK_INCIDENT_THRESHOLD = 12
+
+
+def note_stuck_tick(
+    *, board: str, ready_pending: bool, spawned: bool,
+    results: Iterable[Optional[DispatchResult]] = (), paused: bool = False,
+) -> int:
+    """Persist health on the main board, escalating once per board/episode.
+
+    ``HERMES_KANBAN_STUCK_INCIDENT_TICKS`` overrides the default 12 ticks.
+    The episode and incident receipt commit atomically with card creation;
+    BEGIN IMMEDIATE also serializes competing dispatcher processes. A failed
+    write rolls back and is retried on a later tick, never escaping the loop.
+    """
+    from datetime import UTC, datetime
+
+    try:
+        threshold = _positive_int(
+            os.environ.get("HERMES_KANBAN_STUCK_INCIDENT_TICKS"), STUCK_INCIDENT_THRESHOLD,
+        )
+        # Explicit machine-global main DB: never route incidents to an ambient
+        # current board or a worker-pinned project DB.
+        with _kbc.connect_closing(_kb.kanban_home() / "kanban.db") as conn:
+            conn.execute(
+                "CREATE TABLE IF NOT EXISTS dispatcher_stuck_episodes ("
+                "board TEXT PRIMARY KEY, started TEXT NOT NULL, ticks INTEGER NOT NULL, "
+                "incident_id TEXT)"
+            )
+            with _kbc.write_txn(conn):
+                row = conn.execute(
+                    "SELECT * FROM dispatcher_stuck_episodes WHERE board = ?", (board,),
+                ).fetchone()
+                if paused or spawned or not ready_pending:
+                    conn.execute(
+                        "UPDATE dispatcher_stuck_episodes SET ticks = 0, incident_id = NULL "
+                        "WHERE board = ?", (board,),
+                    )
+                    return 0
+                if row and row["ticks"]:
+                    started, ticks, incident_id = row["started"], row["ticks"] + 1, row["incident_id"]
+                else:
+                    # Keep keys distinct even when recovery and relapse occur
+                    # within one clock tick (or the wall clock steps backwards).
+                    epoch = max(time.time(), float(row["started"]) + 0.000001 if row else 0)
+                    started, ticks, incident_id = f"{epoch:.6f}", 1, None
+                conn.execute(
+                    "INSERT INTO dispatcher_stuck_episodes VALUES (?, ?, ?, ?) "
+                    "ON CONFLICT(board) DO UPDATE SET started=excluded.started, "
+                    "ticks=excluded.ticks, incident_id=excluded.incident_id",
+                    (board, started, ticks, incident_id),
+                )
+                if ticks >= threshold and not incident_id:
+                    with _kbc.connect_closing(board=board) as source:
+                        ids = [r["id"] for r in source.execute(
+                            "SELECT id FROM tasks WHERE status IN ('ready', 'review') "
+                            "AND claim_lock IS NULL ORDER BY id"
+                        )]
+                    first = datetime.fromtimestamp(float(started), UTC).isoformat()
+                    held = describe_suppression(results) or "none reported"
+                    incident_id = _kb.create_task(
+                        conn, title=f"Incident: kanban dispatcher stuck ({board})",
+                        body=(f"Board: {board}\n{ticks} consecutive ticks with ready work and 0 spawns.\n"
+                              f"First stuck (UTC): {first}\n"
+                              f"Stuck ready card ids: {', '.join(ids) or 'none remaining'}\n"
+                              f"Last tick held back: {held}\n"
+                              "Owner: olly. Diagnose dispatcher/profile health; preserve existing gates."),
+                        assignee="olly", created_by="dispatcher", workspace_kind="scratch",
+                        board=_kb.DEFAULT_BOARD, initial_status="running",
+                        idempotency_key=f"dispatcher-stuck:{board}:{started}",
+                    )
+                    conn.execute(
+                        "UPDATE dispatcher_stuck_episodes SET incident_id = ? WHERE board = ?",
+                        (incident_id, board),
+                    )
+                return ticks
+    except Exception:
+        _kb._log.exception("kanban dispatcher: stuck incident update failed for board %s", board)
+        return 0
+
+
 # Bounded registry of recently-reaped worker exits, filled by the reap loop in
 # ``dispatch_once`` and read by ``detect_crashed_workers`` to classify a dead-pid
 # task. Entry: ``pid -> (raw_wait_status, reaped_at_epoch)``; raw status kept so

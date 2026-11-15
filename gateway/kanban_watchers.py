@@ -12,6 +12,7 @@ from __future__ import annotations
 import asyncio
 import os
 import time
+from functools import partial
 from pathlib import Path
 from typing import Any, Optional
 
@@ -260,6 +261,8 @@ class GatewayKanbanWatchersMixin:
         boot = self._kanban_dispatcher_boot()
         if boot is None:
             return
+        from hermes_cli import kanban_db_dispatch as _kbd
+
         _load_config, _kb, kanban_cfg = boot
         settings = _resolve_dispatcher_settings(kanban_cfg, _kb)
         interval = settings.interval
@@ -280,7 +283,6 @@ class GatewayKanbanWatchersMixin:
             try:
                 # Reap zombies before per-board work so a board DB failure
                 # cannot block cleanup of unrelated workers.
-                from hermes_cli import kanban_db_dispatch as _kbd
                 pids = await _to_thread_process_service(_kbd.reap_worker_zombies)
                 if pids:
                     logger.info("kanban dispatcher: reaped %d zombie worker(s), pids=%s", len(pids), pids)
@@ -292,6 +294,10 @@ class GatewayKanbanWatchersMixin:
                 # dispatch while paused; running workers finish naturally.
                 if not _kanban_dispatch_allowed():
                     bad_ticks = 0
+                    for slug in dispatcher._board_slugs():
+                        await _to_thread_process_service(
+                            partial(_kbd.note_stuck_tick, board=slug, ready_pending=False, spawned=False, paused=True),
+                        )
                 else:
                     # Re-read the auto-decompose toggle live so disabling it
                     # takes effect on the next tick, not on restart.
@@ -303,6 +309,15 @@ class GatewayKanbanWatchersMixin:
                     any_spawned = _log_spawn_results(results)
                     ready_pending = await _to_thread_process_service(dispatcher.ready_nonempty)
                     bad_ticks = bad_ticks + 1 if ready_pending and not any_spawned else 0
+                    for slug, res in results:
+                        if res is None:  # Failed/quarantined ticks are not health observations.
+                            continue
+                        board_ready = (ready_pending and not any_spawned
+                                       and await _to_thread_process_service(dispatcher.ready_nonempty, slug))
+                        await _to_thread_process_service(
+                            partial(_kbd.note_stuck_tick, board=slug, ready_pending=board_ready,
+                                    spawned=any_spawned, results=[res]),
+                        )
                 now = int(time.time())
                 if bad_ticks >= _HEALTH_WINDOW and now - last_warn_at >= 300:
                     held = _kbd.describe_suppression(res for _slug, res in (results or []))
