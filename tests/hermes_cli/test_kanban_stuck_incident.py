@@ -96,13 +96,28 @@ def test_creation_failure_retries_same_episode(monkeypatch, caplog):
     assert len(incidents()) == 1
 
 
-def test_cli_callback_creates_incident(monkeypatch):
+def fail_first_create(monkeypatch):
+    create = kb.create_task
+    calls = 0
+    def flaky(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise OSError("incident store temporarily unavailable")
+        return create(*args, **kwargs)
+    monkeypatch.setattr(kb, "create_task", flaky)
+
+
+@pytest.mark.parametrize("fail_once", [False, True])
+def test_cli_callback_creates_incident(monkeypatch, fail_once):
     from hermes_cli import kanban_ops
     with kbc.connect_closing() as conn:
         tid = kb.create_task(conn, title="waiting", assignee="olly")
     monkeypatch.setattr(dispatch, "has_spawnable_ready", lambda conn: True)
+    if fail_once:
+        fail_first_create(monkeypatch)
     def daemon(**kwargs):
-        for _ in range(12):
+        for _ in range(13):
             kwargs["on_tick"](dispatch.DispatchResult())
     monkeypatch.setattr(dispatch, "run_daemon", daemon)
     args = Namespace(force=True, verbose=False, interval=60, max=None)
@@ -122,8 +137,7 @@ def test_threshold_override(monkeypatch, value, threshold):
 
 
 def test_project_incident_is_on_main_board(monkeypatch):
-    from hermes_cli.kanban_db_boards import create_board
-    create_board("project")
+    kb.create_board("project")
     with kbc.connect_closing(board="project") as conn:
         tid = kb.create_task(conn, title="project waiting", assignee="olly", board="project")
     monkeypatch.setenv("HERMES_KANBAN_DB", str(kb.kanban_db_path("project")))
@@ -156,7 +170,8 @@ def test_archived_incident_is_not_recreated():
     assert len(incidents()) == 1
 
 
-def test_gateway_loop_creates_incident(monkeypatch):
+@pytest.mark.parametrize("fail_once", [False, True])
+def test_gateway_loop_creates_incident(monkeypatch, fail_once, caplog):
     from gateway import kanban_watchers as watchers
     from gateway.kanban_watchers_dispatcher import _KanbanDispatcher
     class Runner(watchers.GatewayKanbanWatchersMixin):
@@ -166,7 +181,7 @@ def test_gateway_loop_creates_incident(monkeypatch):
             return dict, kb, {}
         async def _sleep_between_ticks(self, interval):
             self.ticks += 1
-            self._running = self.ticks < 12
+            self._running = self.ticks < 13
     async def no_delay(*args):
         return None
     monkeypatch.setattr(watchers.asyncio, "sleep", no_delay)
@@ -177,5 +192,8 @@ def test_gateway_loop_creates_incident(monkeypatch):
     monkeypatch.setattr(_KanbanDispatcher, "_board_slugs", lambda self: ["default"])
     monkeypatch.setattr(_KanbanDispatcher, "tick_once_for_board", lambda self, slug: dispatch.DispatchResult())
     kb.init_db()
+    if fail_once:
+        fail_first_create(monkeypatch)
     asyncio.run(Runner()._kanban_dispatcher_watcher())
     assert len(incidents()) == 1
+    assert "unexpected watcher error" not in caplog.text
