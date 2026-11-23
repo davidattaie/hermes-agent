@@ -1048,6 +1048,10 @@ DEFAULT_CONFIG = {
         # the OAuth path. Empty or malformed (no http(s):// + host, or quote/angle/whitespace chars)
         # = reconstruct from headers.
         "public_url": "",
+        # Further exact hostnames (bare, no scheme/port) the dashboard is reached at, accepted as
+        # Host/Origin and engaging the auth gate like public_url's host; never used for OAuth
+        # redirects. E.g. a friendly DNS name next to the tailnet name in public_url.
+        "extra_public_hosts": [],
     },
 
     "privacy": {

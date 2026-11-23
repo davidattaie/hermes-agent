@@ -27,14 +27,14 @@ _DESKTOP_ATTACHMENT_WS_MAX_BYTES = 384 * 1024 * 1024
 
 
 def _dashboard_public_hosts() -> frozenset[str]:
-    """Return the exact hostname declared by ``dashboard.public_url``.
+    """Return the exact hostnames declared by ``dashboard.public_url`` and ``dashboard.extra_public_hosts``.
 
     One source of truth for OAuth redirects, Host and WS Origin validation.
     Malformed or unset values fail closed as an empty set.
     """
-    from hermes_cli.dashboard_auth.prefix import resolve_public_url
+    from hermes_cli.dashboard_auth.prefix import extra_public_hosts, resolve_public_url
 
-    return public_url_hosts(resolve_public_url())
+    return public_url_hosts(resolve_public_url()) | extra_public_hosts()
 
 
 def public_url_hosts(public_url: str) -> frozenset[str]:

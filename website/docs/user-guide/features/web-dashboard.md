@@ -1077,6 +1077,20 @@ browser-facing hostname while forwarding to a dashboard bound to
 such as `dashboard.example.com.evil.test` remains rejected by the DNS-rebinding
 guard.
 
+To accept more than one hostname (for example a friendly DNS name in front of the
+tailnet name that `public_url` declares), list the extra bare hostnames in
+`dashboard.extra_public_hosts`:
+
+```yaml
+dashboard:
+  public_url: "http://box.tailnet.ts.net:9119"
+  extra_public_hosts: ["hermes.svc.example.com"]
+```
+
+Each entry is an exact hostname (no scheme, port or wildcard); invalid entries are
+logged and ignored. They are accepted as `Host`/`Origin` and engage the auth gate
+exactly like the `public_url` hostname, and never change the OAuth callback URL.
+
 Declaring a non-loopback `public_url` always engages the dashboard auth gate,
 even when the backend binds to loopback. Configure a password or OAuth provider
 first; without one, Hermes fails closed at startup. This prevents the local SPA

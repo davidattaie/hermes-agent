@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import logging
 import os
+import re
 import urllib.parse
 from typing import Optional
 
@@ -112,6 +113,31 @@ def _load_dashboard_section() -> dict:
         return {}
     section = cfg.get("dashboard") if isinstance(cfg, dict) else None
     return section if isinstance(section, dict) else {}
+
+
+_HOSTNAME_RE = re.compile(r"^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)*$")
+
+
+def extra_public_hosts() -> frozenset[str]:
+    """Further exact hostnames the dashboard is reached at (``dashboard.extra_public_hosts``), for a
+    box that has one ``public_url`` but is also served under another name (a friendly DNS name in
+    front of the tailnet name). Bare hostnames only, no scheme/port/wildcard; invalid entries warn
+    and are dropped. They widen the Host/Origin allow-list and, like ``public_url``, engage the auth
+    gate; they never change the OAuth redirect_uri."""
+    raw = _load_dashboard_section().get("extra_public_hosts")
+    if not raw:
+        return frozenset()
+    if not isinstance(raw, list):
+        _log.warning("dashboard.extra_public_hosts in config.yaml must be a list of hostnames; ignored")
+        return frozenset()
+    hosts = set()
+    for item in raw:
+        name = str(item).strip().lower()
+        if _HOSTNAME_RE.match(name) and len(name) <= 253:
+            hosts.add(name)
+        else:
+            _log.warning("dashboard.extra_public_hosts: %r is not a bare hostname; ignored", item)
+    return frozenset(hosts)
 
 
 def resolve_public_url(state=None) -> str:
