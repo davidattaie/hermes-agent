@@ -1,0 +1,10 @@
+{
+  "name": "hermes-agent",
+  "description": "Hermes Agent (davidattaie fork): gateway, API server, webhook and web dashboard on Binar",
+  "kind": "service",
+  "components": [
+    {"name": "dashboard", "port": 9119, "unit": "hermes-dashboard.service", "health": "/api/status", "role": "web"},
+    {"name": "api-server", "port": 8642, "unit": "hermes-gateway.service", "health": "/health", "role": "api"},
+    {"name": "webhook", "port": 8644, "unit": "hermes-gateway.service", "health": "/health", "role": "api"}
+  ]
+}
